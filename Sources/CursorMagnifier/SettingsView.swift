@@ -4,6 +4,7 @@ struct SettingsView: View {
     @ObservedObject var store = SettingsStore.shared
     @State private var savedFlash = false
     @State private var persistentPreviewOn = false
+    @State private var chordConflictStatus: Int?
     @State private var selection: Int = {
         // 截图诊断模式：通过环境变量预选 tab（QH_TAB=general/hotkey/magnifier）
         switch ProcessInfo.processInfo.environment["QH_TAB"] {
@@ -76,6 +77,11 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     ChordHotkeyRecorder(store: store)
+                    if let chordConflictStatus {
+                        Text("系统级快捷键注册失败（status \(chordConflictStatus)）。这个组合可能已被 macOS 或其他 App 占用；请换一个组合，例如 ⌃⌥S。")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
             } header: {
                 Text("切换形状（圆形 / 圆角矩形）")
@@ -86,6 +92,11 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for: .quickHighlightChordHotkeyConflict)) { note in
+            chordConflictStatus = note.userInfo?["status"] as? Int
+        }
+        .onChange(of: store.toggleShapeKeyCode) { _ in chordConflictStatus = nil }
+        .onChange(of: store.toggleShapeModifiers) { _ in chordConflictStatus = nil }
     }
 
     private var magnifierTab: some View {

@@ -1,0 +1,70 @@
+<Window x:Class="QuickHighlight.Settings.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="快捷高光 偏好设置"
+        Width="540"
+        Height="620"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="20">
+        <TabControl>
+            <TabItem Header="通用">
+                <StackPanel Margin="12" VerticalAlignment="Top">
+                    <CheckBox Content="显示白色高光圆环" IsChecked="{Binding ShowRing}" Margin="0,0,0,12" />
+                    <CheckBox Content="显示当前放大倍率" IsChecked="{Binding ShowZoomLabel}" Margin="0,0,0,12" />
+                    <TextBlock Foreground="#666" TextWrapping="Wrap">
+                        Windows 版不需要额外的“辅助功能”授权。屏幕抓帧失败时不会弹窗，托盘图标会轻提示并自动重连。
+                    </TextBlock>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="快捷键">
+                <StackPanel Margin="12" VerticalAlignment="Top">
+                    <TextBlock Text="激活放大镜（按住显示，松开隐藏）" FontWeight="SemiBold" />
+                    <ComboBox x:Name="ActivationCombo" SelectedItem="{Binding ActivationKey}" Margin="0,8,0,18" />
+
+                    <TextBlock Text="切换形状（全局组合键）" FontWeight="SemiBold" />
+                    <TextBox x:Name="ChordBox"
+                             IsReadOnly="True"
+                             Margin="0,8,0,6"
+                             Padding="8"
+                             PreviewKeyDown="ChordBox_OnPreviewKeyDown" />
+                    <TextBlock Foreground="#666" TextWrapping="Wrap">
+                        点击输入框后按一个组合键，例如 Ctrl+Alt+S。若某个组合被系统占用，托盘应用会保留当前设置，请换一个组合。
+                    </TextBlock>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="放大镜">
+                <StackPanel Margin="12">
+                    <Border Height="170" CornerRadius="8" BorderBrush="#DDD" BorderThickness="1" Margin="0,0,0,14">
+                        <local:MagnifierPreview xmlns:local="clr-namespace:QuickHighlight.Settings" />
+                    </Border>
+
+                    <TextBlock Text="形状" FontWeight="SemiBold" />
+                    <ComboBox x:Name="ShapeCombo"
+                              SelectedItem="{Binding Shape}"
+                              Margin="0,6,0,12" />
+
+                    <TextBlock Text="{Binding Radius, StringFormat=圆形半径 {0:F0}px}" />
+                    <Slider Minimum="50" Maximum="400" TickFrequency="5" Value="{Binding Radius}" />
+
+                    <TextBlock Text="{Binding RectWidth, StringFormat=矩形宽度 {0:F0}px}" Margin="0,10,0,0" />
+                    <Slider Minimum="100" Maximum="800" TickFrequency="10" Value="{Binding RectWidth}" />
+
+                    <TextBlock Text="{Binding RectHeight, StringFormat=矩形高度 {0:F0}px}" Margin="0,10,0,0" />
+                    <Slider Minimum="30" Maximum="600" TickFrequency="5" Value="{Binding RectHeight}" />
+
+                    <TextBlock Text="{Binding Zoom, StringFormat=放大倍率 {0:F1}×}" Margin="0,10,0,0" />
+                    <Slider Minimum="1" Maximum="6" TickFrequency="0.1" IsSnapToTickEnabled="True" Value="{Binding Zoom}" />
+
+                    <TextBlock Text="{Binding DimAlpha, StringFormat=外圈暗度 {0:P0}}" Margin="0,10,0,0" />
+                    <Slider Minimum="0" Maximum="0.9" TickFrequency="0.05" IsSnapToTickEnabled="True" Value="{Binding DimAlpha}" />
+
+                    <CheckBox Content="锐化（抗模糊，后续 GPU 路径增强）" IsChecked="{Binding SharpenEnabled}" Margin="0,12,0,0" />
+                    <Button Content="恢复默认" HorizontalAlignment="Right" Width="96" Margin="0,16,0,0" Click="Reset_OnClick" />
+                </StackPanel>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

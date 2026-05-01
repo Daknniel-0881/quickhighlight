@@ -31,6 +31,7 @@ final class OverlayView: NSView {
     private struct DiagSnapshot {
         var frameSize: CGSize = .zero
         var pointSize: CGSize = .zero
+        var pointToPixelScale: CGSize = .zero
         var zoom: CGFloat = 0
         var innerSize: CGSize = .zero
         var cropPxSize: CGSize = .zero
@@ -118,28 +119,17 @@ final class OverlayView: NSView {
         let scaleX = CGFloat(frame.width) / pointSize.width
         let scaleY = CGFloat(frame.height) / pointSize.height
 
-        // 鼠标在主屏点坐标（左上原点）
-        let cursorPxX = mouseGlobal.x * scaleX
-        let cursorPxY = (primaryHeight - mouseGlobal.y) * scaleY
-
         // crop 区域：内部尺寸 / zoom 倍率得"原始尺寸"，乘像素比得像素尺寸
         let z = max(zoom, 0.01)
         let inner = innerSize
-        let captureSizePtW = inner.width / z
-        let captureSizePtH = inner.height / z
-        let captureSizePxW = captureSizePtW * scaleX
-        let captureSizePxH = captureSizePtH * scaleY
-
-        var cropRect = CGRect(
-            x: cursorPxX - captureSizePxW / 2,
-            y: cursorPxY - captureSizePxH / 2,
-            width: captureSizePxW,
-            height: captureSizePxH
-        ).integral
-
-        // 边缘 clamp，避免靠近角落时 cropping 返回 nil
-        let frameBounds = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-        cropRect = cropRect.intersection(frameBounds)
+        let cropRect = MagnifierGeometry.cropRect(
+            cursorPoint: mouseGlobal,
+            primaryScreenHeightPoints: primaryHeight,
+            innerSizePoints: inner,
+            zoom: z,
+            pointToPixelScale: CGSize(width: scaleX, height: scaleY),
+            framePixelSize: CGSize(width: frame.width, height: frame.height)
+        )
         guard !cropRect.isEmpty else {
             capturedCGImage = nil
             needsDisplay = true
@@ -154,11 +144,9 @@ final class OverlayView: NSView {
         // 独立、自洽的 CGImage（standalone bitmap），彻底解耦父帧。
         // 注意：CIImage 用左下原点，cropRect 此时是左上原点（CGImage 坐标系），需翻 Y。
         let fullCI = CIImage(cgImage: frame)
-        let ciCropRect = CGRect(
-            x: cropRect.minX,
-            y: CGFloat(frame.height) - cropRect.maxY,  // CGImage top-down → CIImage bottom-up
-            width: cropRect.width,
-            height: cropRect.height
+        let ciCropRect = MagnifierGeometry.ciCropRect(
+            fromTopLeftCropRect: cropRect,
+            framePixelHeight: CGFloat(frame.height)
         )
         var processedCI = fullCI.cropped(to: ciCropRect)
 
@@ -189,6 +177,7 @@ final class OverlayView: NSView {
             diag = DiagSnapshot(
                 frameSize: CGSize(width: frame.width, height: frame.height),
                 pointSize: pointSize,
+                pointToPixelScale: CGSize(width: scaleX, height: scaleY),
                 zoom: z,
                 innerSize: inner,
                 cropPxSize: cropRect.size,
@@ -278,12 +267,12 @@ final class OverlayView: NSView {
         // 5) 诊断模式：lens 下方画完整诊断标签（QH_DIAG=1 启动）
         //    这个标签让肉眼直接验证：跑的是不是新 binary、zoom 数学对不对、物化是否成功
         if kDiagMode {
-            // 物化尺寸 vs lens 几何尺寸的视觉放大倍率
-            let visualZoomX = diag.capturedSize.width > 0
-                ? circleRect.width / diag.capturedSize.width : 0
+            // 物化尺寸（像素）先换回点，再和 lens 几何尺寸比，才是用户看到的视觉倍率。
+            let visualZoomX = diag.capturedSize.width > 0 && diag.pointToPixelScale.width > 0
+                ? circleRect.width / (diag.capturedSize.width / diag.pointToPixelScale.width) : 0
             let verdict: String = {
                 if diag.capturedSize == .zero { return "✗ 抓帧失败" }
-                let expectedSrcW = diag.innerSize.width / max(diag.zoom, 0.01)
+                let expectedSrcW = (diag.innerSize.width / max(diag.zoom, 0.01)) * diag.pointToPixelScale.width
                 if abs(diag.cropPxSize.width - expectedSrcW) > expectedSrcW * 0.2 {
                     return "✗ crop 尺寸异常"
                 }

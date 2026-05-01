@@ -30,7 +30,10 @@ final class HotkeyMonitor {
     // 单键激活通道
     private var flagsGlobal: Any?
     private var flagsLocal: Any?
+    private var keyGlobal: Any?
+    private var keyLocal: Any?
     private var lastState = false
+    private var lastToggleAt: TimeInterval = 0
 
     // Carbon 组合键通道
     private var carbonHotKeyRef: EventHotKeyRef?
@@ -50,6 +53,13 @@ final class HotkeyMonitor {
             self?.handleFlags(e)
             return e
         }
+        keyGlobal = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            self?.handleChordFallback(e)
+        }
+        keyLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            self?.handleChordFallback(e)
+            return e
+        }
 
         // Carbon 组合键
         installCarbonHandler()
@@ -59,6 +69,8 @@ final class HotkeyMonitor {
     func stop() {
         if let g = flagsGlobal { NSEvent.removeMonitor(g); flagsGlobal = nil }
         if let l = flagsLocal { NSEvent.removeMonitor(l); flagsLocal = nil }
+        if let g = keyGlobal { NSEvent.removeMonitor(g); keyGlobal = nil }
+        if let l = keyLocal { NSEvent.removeMonitor(l); keyLocal = nil }
         unregisterChord()
         if let h = carbonEventHandler {
             RemoveEventHandler(h)
@@ -68,6 +80,22 @@ final class HotkeyMonitor {
             lastState = false
             onStateChange?(false)
         }
+    }
+
+    private func triggerToggleShape() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastToggleAt > 0.20 else { return }
+        lastToggleAt = now
+        onToggleShape?()
+    }
+
+    private func handleChordFallback(_ event: NSEvent) {
+        guard store.toggleShapeKeyCode >= 0 else { return }
+        guard Int(event.keyCode) == store.toggleShapeKeyCode else { return }
+        let cleanMods = event.modifierFlags.intersection(.deviceIndependentFlagsMask).rawValue
+        let wantedMods = store.toggleShapeModifiers
+        guard cleanMods & wantedMods == wantedMods else { return }
+        triggerToggleShape()
     }
 
     /// 设置项变更后调用：清旧状态 + 重新注册组合键
@@ -114,7 +142,7 @@ final class HotkeyMonitor {
                 )
                 guard err == noErr, hkID.id == HotkeyMonitor.hotKeyID else { return noErr }
                 let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userData).takeUnretainedValue()
-                DispatchQueue.main.async { monitor.onToggleShape?() }
+                DispatchQueue.main.async { monitor.triggerToggleShape() }
                 return noErr
             },
             1,

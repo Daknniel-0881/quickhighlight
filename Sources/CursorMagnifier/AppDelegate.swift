@@ -38,9 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateStatusIcon(captureHealthy: false)
             self?.scheduleSilentCaptureRestart()
         }
-        // 权限引导放到 UI 起来之后弹，避免被启动闪屏盖掉
+        // 权限由系统首启时自然处理；App 自己不再弹任何权限引导，避免授权死循环打扰录制。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.ensurePermissions()
+            self?.silenceLegacyPermissionPromptState()
             self?.startScreenCapture()
             if ProcessInfo.processInfo.environment["QH_OPEN_SETTINGS"] == "1" {
                 self?.openSettings()
@@ -359,67 +359,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 权限引导：仅在「全新设备 + 没用过本 App」时弹一次自定义引导对话框。
-    ///
-    /// 死循环根因（v8 之前）：
-    /// 1) ad-hoc 签名每次 build cdhash 变化，TCC 数据库认旧 cdhash 不认新的
-    /// 2) `CGPreflightScreenCaptureAccess()` 因此**永远返回 false**
-    /// 3) 旧逻辑用 `axTrusted && scOk` 作为「曾经授权」判定 → 永远不成立 → kPermGrantedOnce 永远不写
-    /// 4) 主动调 `CGRequestScreenCaptureAccess()` → 系统每次启动都弹「想录制屏幕」对话框
-    /// 5) 用户去系统设置勾选 → 重启 → cdhash 再变 → 又弹 → **死循环**
-    ///
-    /// 修复策略（v8）：
-    /// - 「弹过自定义引导」就标记 kPermPromptShownAt，**之后永远不再弹任何 App 自己的引导**
-    /// - **永远不主动调 CGRequestScreenCaptureAccess**——首次 SCStream.startCapture 会自然触发一次系统弹框，
-    ///   交给系统决定，App 不重复请求
-    /// - 不依赖 preflight 结果做循环判定，因为 ad-hoc 下它根本不可信
-    private func ensurePermissions() {
+    /// 旧版本曾用这些 defaults 控制自定义权限弹窗。现在权限失败不再弹窗，
+    /// 只通过菜单栏图标轻提示 + 抓帧后台自愈处理；这里写入标记是为了让
+    /// 回滚/混跑旧二进制时也尽量不再打扰用户。
+    private func silenceLegacyPermissionPromptState() {
         let defaults = UserDefaults.standard
-        let kPermPromptShownAt = "permPromptDismissedAt"
-
-        // 任何时候只要弹过一次自定义引导，永久不再弹（无视 preflight 结果）
-        // 这一行是切断死循环的关键
-        if defaults.double(forKey: kPermPromptShownAt) > 0 {
-            return
+        if defaults.double(forKey: "permPromptDismissedAt") == 0 {
+            defaults.set(Date().timeIntervalSince1970, forKey: "permPromptDismissedAt")
         }
-
-        // 真·首次（这台设备从未运行过本 App）：弹一次告知去开权限
-        // ⚠️ 不调用 CGRequestScreenCaptureAccess —— 让 SCStream.startCapture 那条路径
-        //    去自然触发系统级弹框，避免双重请求
-        let axTrusted = AXIsProcessTrustedWithOptions(nil)
-        let scOk = CGPreflightScreenCaptureAccess()
-        if axTrusted && scOk {
-            // 极少数情况：用户从其他 App 打开过相同 cdhash（比如签名稳定的版本），
-            // 此时无需弹引导，直接静默 + 标记
-            defaults.set(Date().timeIntervalSince1970, forKey: kPermPromptShownAt)
-            return
-        }
-
-        let alert = NSAlert()
-        alert.messageText = "快捷高光 首次启动需要授权两项系统权限"
-        var lines: [String] = []
-        if !scOk { lines.append("• 屏幕录制：放大圈内显示鼠标周围画面") }
-        if !axTrusted { lines.append("• 辅助功能：监听全局快捷键（按住激活）") }
-        alert.informativeText = """
-        \(lines.joined(separator: "\n"))
-
-        授权后请退出快捷高光（菜单栏 🔍 → 退出），再次打开即可。授权状态会被记住，下次不会再弹这个对话框。
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "去开启屏幕录制")
-        alert.addButton(withTitle: "去开启辅助功能")
-        alert.addButton(withTitle: "稍后")
-        // 关键：弹之前就先写标志，无论用户点哪个按钮、是否真去授权，下次启动都不再打扰
-        defaults.set(Date().timeIntervalSince1970, forKey: kPermPromptShownAt)
+        defaults.set(true, forKey: "permGrantedOnce")
         defaults.synchronize()
-        let resp = alert.runModal()
-        switch resp {
-        case .alertFirstButtonReturn:
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-        case .alertSecondButtonReturn:
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-        default:
-            break
-        }
     }
 }

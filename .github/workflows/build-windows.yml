@@ -1,0 +1,30 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "quickhighlight-win/**"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish win-x64 single-file app
+        shell: pwsh
+        run: |
+          cd quickhighlight-win
+          ./build.ps1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickHighlight-win-x64
+          path: quickhighlight-win/artifacts/QuickHighlight-win-x64.zip

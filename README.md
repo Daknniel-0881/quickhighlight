@@ -32,7 +32,7 @@
 
 ### 系统集成
 - 🎬 **开机自启**：可选，由 `SMAppService` 管理
-- 🔐 **稳定本地代码签名**：自动创建 `QuickHighlightDevCert` 自签证书，每次重 build 后 cdhash 不变 → **不会反复弹"屏幕录制"权限请求**
+- 🔐 **稳定本地代码签名保护**：默认使用 `QuickHighlightLocalSigner`，避免 ad-hoc rebuild 让 macOS 把 App 当成新程序反复请求屏幕录制权限
 - 🖼 **桌面快捷方式带 Logo**：自动复制完整 .app 到桌面，Finder 直接显示应用图标
 - 📍 **多显示器感知**：副屏暂不放大（SCStream 当前仅抓主屏），不会出错或卡死
 
@@ -67,7 +67,7 @@ bash build_app.sh
 1. `swift build -c release` 编译
 2. 用 `generate_icon.swift` 生成图标 `.icns`
 3. 打包成 `dist/快捷高光.app`
-4. 用稳定本地证书签名（首次自动创建 `QuickHighlightDevCert`）
+4. 用稳定本地证书签名（首次自动创建 `QuickHighlightLocalSigner`）
 5. 安装到 `/Applications/快捷高光.app`
 6. 复制完整 .app 到桌面（带完整 icon resource，Finder 直接显示 logo）
 7. 重新注册到 Launch Services 刷图标缓存
@@ -84,7 +84,7 @@ bash build_app.sh
 | **辅助功能** | 监听全局热键（按住激活、组合键切换形状）| 系统设置 → 隐私与安全性 → 辅助功能 |
 | **屏幕录制** | 抓主屏画面给放大圈显示 | 系统设置 → 隐私与安全性 → 屏幕录制 |
 
-> 由于使用稳定的本地代码签名（不是 ad-hoc），授权一次即可——**重 build 后不会反复要求重新授权**。
+> macOS 的屏幕录制授权和 App 代码身份绑定。`build_app.sh` 默认拒绝生成 ad-hoc 签名产物，避免重 build 后 cdhash 漂移导致反复授权。若只是临时本机调试，可显式运行 `QH_ALLOW_ADHOC=1 bash build_app.sh`，但这可能让系统再次请求屏幕录制授权。
 
 ---
 
@@ -214,13 +214,31 @@ ctx.draw(img, in: CGRect(x: 0, y: 0, width: circleRect.width, height: circleRect
 
 ### 稳定本地代码签名（重 build 后不弹权限）
 
-`codesign --sign -` ad-hoc 签名每次重 build 都会生成新的 cdhash，TCC 数据库以为是新 app 反复要求授权。`build_app.sh` 一次性创建本地自签 `QuickHighlightDevCert` 长期复用：
+`codesign --sign -` ad-hoc 签名每次重 build 都会生成新的 cdhash，TCC 数据库以为是新 app 反复要求授权。`build_app.sh` 优先使用本地自签 `QuickHighlightLocalSigner` 长期复用，并且默认不再悄悄退回 ad-hoc：
 
 ```bash
-codesign --force --deep --sign QuickHighlightDevCert /Applications/快捷高光.app
+bash build_app.sh
 ```
 
-两份 .app（`/Applications/` + 桌面）共享同一个 cdhash，TCC 只记一条授权。
+如果钥匙串私钥访问授权未完成，脚本会停止并说明原因。临时调试可以显式设置 `QH_ALLOW_ADHOC=1`，但发布/日常使用不推荐。
+
+### Windows 版本
+
+Windows WPF/.NET 8 端口位于 `quickhighlight-win/QuickHighlight/`：
+
+- 使用 `Windows.Graphics.Capture` + D3D11 frame pool 持续抓主屏。
+- 使用透明置顶 WPF overlay，`WS_EX_TRANSPARENT` 鼠标穿透。
+- 默认按住 `LeftAlt` 显示高光，`Ctrl+Alt+S` 全局切换圆形 / 圆角矩形。
+- 抓帧失败时不弹窗、不在 lens 内画错误文字，托盘轻提示并指数退避重连。
+
+Windows 构建：
+
+```powershell
+cd quickhighlight-win
+.\build.ps1
+```
+
+输出：`quickhighlight-win/artifacts/QuickHighlight-win-x64.zip`
 
 ---
 

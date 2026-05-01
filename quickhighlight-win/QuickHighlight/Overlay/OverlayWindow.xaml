@@ -1,0 +1,12 @@
+<Window x:Class="QuickHighlight.Overlay.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:overlay="clr-namespace:QuickHighlight.Overlay"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize">
+    <overlay:OverlaySurface x:Name="Surface" />
+</Window>

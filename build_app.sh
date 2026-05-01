@@ -14,25 +14,50 @@ DESKTOP_DIR="${HOME}/Desktop"
 
 # 稳定本地代码签名身份（一次创建，长期复用）。
 # ad-hoc 签名（codesign --sign -）每次重 build 都会生成新的 cdhash，TCC 数据库以为是新 app
-# 反复要求授权。用一个固定的 self-signed cert 让 cdhash 跨 build 稳定。
-CERT_NAME="QuickHighlightDevCert"
+# 反复要求授权。用一个固定且被当前用户信任的 self-signed cert 让代码需求跨 build 稳定。
+CERT_NAME="QuickHighlightLocalSigner"
+
+run_with_timeout() {
+    local seconds="$1"
+    shift
+    "$@" &
+    local pid=$!
+    local elapsed=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$elapsed" -ge "$seconds" ]; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    wait "$pid"
+}
 
 ensure_signing_identity() {
     if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CERT_NAME"; then
         return 0
     fi
-    # 证书已经导入过（哪怕没 trust）就别再 import 一遍堆积同名条目，直接 return 1 走 fallback
-    if security find-certificate -c "$CERT_NAME" -a 2>/dev/null | grep -q "labl"; then
-        echo "  (证书已存在但缺 keychain trust setting，本次走 ad-hoc fallback)"
+
+    # 如果同名证书存在但不是 valid codesigning identity，就删掉证书记录后重建。
+    # 旧版脚本会留下“只有证书/不可用于 codesign”的 QuickHighlightDevCert，
+    # 导致后续每次都 fallback 到 ad-hoc。这里不要容忍半坏状态。
+    while security find-certificate -c "$CERT_NAME" -a 2>/dev/null | grep -q "labl"; do
+        echo "  (发现不可用的 ${CERT_NAME} 证书记录，删除后重建)"
+        security delete-certificate -c "$CERT_NAME" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1 || break
+        if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CERT_NAME"; then
+            return 0
+        fi
+    done
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "✗ 找不到 openssl，无法自动创建稳定代码签名证书"
         return 1
     fi
+
     echo "→ 首次创建本地代码签名证书 ${CERT_NAME} ..."
 
-    # 此前这段 silent fail（>/dev/null 2>&1 || true）—— openssl 3 默认 PKCS12 用
-    # PBES2/AES-256-CBC，macOS Security framework 默认不识别，security import 静默失败 →
-    # keychain 0 valid identity → 每次 build fallback ad-hoc → cdhash 跨 build 变 →
-    # TCC 每次当新 app → 屏幕录制权限失效 → 抓帧 nil → 用户以为 zoom 没生效。
-    # 反复栽跟头三次。这次让所有错误都 loud + 创建后立刻 verify，找不到就 abort。
     local TMPDIR_X
     TMPDIR_X="$(mktemp -d)"
     cat > "$TMPDIR_X/cert.cnf" <<EOF
@@ -50,7 +75,13 @@ CN = ${CERT_NAME}
 basicConstraints = critical, CA:FALSE
 keyUsage = critical, digitalSignature
 extendedKeyUsage = critical, codeSigning
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
 EOF
+    # 直接使用 self-signed leaf cert 时，macOS 往往不会把它列为 valid codesigning
+    # identity。这里改成当前用户 trustRoot 的本地 code signing root；这是钥匙串
+    # “创建证书… → 自签名根身份 → 代码签名”的命令行等价物。
+    perl -0pi -e 's/basicConstraints = critical, CA:FALSE/basicConstraints = critical, CA:TRUE/; s/keyUsage = critical, digitalSignature/keyUsage = critical, digitalSignature, keyCertSign/' "$TMPDIR_X/cert.cnf"
     if ! openssl req -x509 -newkey rsa:2048 \
             -keyout "$TMPDIR_X/key.pem" -out "$TMPDIR_X/cert.pem" \
             -days 3650 -nodes -config "$TMPDIR_X/cert.cnf" 2>"$TMPDIR_X/err"; then
@@ -90,6 +121,14 @@ EOF
         rm -rf "$TMPDIR_X"
         return 1
     fi
+    if ! security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k "$HOME/Library/Keychains/login.keychain-db" \
+            "$TMPDIR_X/cert.pem" 2>"$TMPDIR_X/err"; then
+        echo "✗ 将 ${CERT_NAME} 设为当前用户可信代码签名证书失败:"
+        cat "$TMPDIR_X/err"
+        rm -rf "$TMPDIR_X"
+        return 1
+    fi
     rm -rf "$TMPDIR_X"
 
     # 让 codesign 不再弹 keychain 密码框
@@ -106,7 +145,7 @@ EOF
         security find-identity -v 2>&1 | head -10
         return 1
     fi
-    echo "✓ 证书 ${CERT_NAME} 创建并导入成功"
+    echo "✓ 证书 ${CERT_NAME} 创建、导入并信任成功"
 }
 
 echo "→ swift build (release) ..."
@@ -131,27 +170,38 @@ set +e
 ensure_signing_identity
 ENSURE_RC=$?
 set -e
-if [ "$ENSURE_RC" = "0" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$CERT_NAME"; then
-    echo "→ 用稳定本地证书签名（${CERT_NAME}）..."
-    codesign --force --deep --sign "$CERT_NAME" "$APP_DIR" >/dev/null
-    SIGN_AUTH="$(codesign -dv --verbose=4 "$APP_DIR" 2>&1 | grep -E '^Authority' | head -1)"
-    echo "  ✓ Authority: $SIGN_AUTH"
-else
+if [ "$ENSURE_RC" != "0" ] || ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$CERT_NAME"; then
     echo ""
-    echo "⚠️  稳定本地证书不可用，本次退化到 ad-hoc 签名 ⚠️"
-    echo "    后果：本次 build 的 cdhash 会跟之前授权过的不一样，"
-    echo "    曲率需要去【系统设置 → 隐私与安全性 → 屏幕录制】重新勾选「快捷高光」一次。"
+    echo "✗ 稳定本地证书不可用，已停止打包。"
+    echo "  为了避免再次进入「每次 build 都重新请求屏幕录制授权」死循环，"
+    echo "  build_app.sh 默认不再生成 ad-hoc 签名产物。"
     echo ""
-    echo "    一次性根治办法（手动 5 分钟，之后所有 build 都稳定）:"
-    echo "    1) 打开「钥匙串访问」.app"
-    echo "    2) 菜单栏：钥匙串访问 → 证书助理 → 创建证书…"
-    echo "       名称：${CERT_NAME}"
-    echo "       身份类型：自签名根身份"
-    echo "       证书类型：代码签名"
-    echo "       勾「让我覆盖默认」→ 一直点继续，全部默认即可"
-    echo "    3) 创建完后再跑 bash build_app.sh，会自动找到并用它"
+    echo "  如果你明确只是临时调试、愿意重新授权，可以手动运行："
+    echo "    QH_ALLOW_ADHOC=1 bash build_app.sh"
     echo ""
+    if [ "${QH_ALLOW_ADHOC:-}" != "1" ]; then
+        exit 1
+    fi
+    echo "⚠️  QH_ALLOW_ADHOC=1 已设置，本次按你的明确要求使用 ad-hoc 签名。"
     codesign --force --deep --sign - "$APP_DIR" >/dev/null
+else
+    echo "→ 用稳定本地证书签名（${CERT_NAME}）..."
+    if ! run_with_timeout 20 codesign --force --deep --sign "$CERT_NAME" "$APP_DIR" >/dev/null; then
+        echo "✗ 稳定签名未能完成（通常是钥匙串正在等待私钥访问授权）。"
+        if [ "${QH_ALLOW_ADHOC:-}" != "1" ]; then
+            echo "  为避免重新触发屏幕录制授权死循环，默认不退回 ad-hoc。"
+            echo "  临时本机安装可运行：QH_ALLOW_ADHOC=1 bash build_app.sh"
+            exit 1
+        fi
+        echo "⚠️  QH_ALLOW_ADHOC=1 已设置，本次按你的明确要求使用 ad-hoc 签名。"
+        codesign --force --deep --sign - "$APP_DIR" >/dev/null
+    fi
+    SIGN_AUTH="$(codesign -dv --verbose=4 "$APP_DIR" 2>&1 | grep -E '^Authority|^TeamIdentifier|^Signature=' | head -5)"
+    echo "$SIGN_AUTH" | sed 's/^/  ✓ /'
+    if codesign -dv --verbose=4 "$APP_DIR" 2>&1 | grep -q 'Signature=adhoc'; then
+        echo "✗ 签名结果仍是 ad-hoc，拒绝继续安装"
+        exit 1
+    fi
 fi
 
 echo "→ 关闭旧实例 ..."
