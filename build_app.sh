@@ -12,9 +12,16 @@ APP_DIR="${DIST_DIR}/${APP_NAME}.app"
 INSTALL_PATH="/Applications/${APP_NAME}.app"
 DESKTOP_DIR="${HOME}/Desktop"
 
-# 稳定本地代码签名身份（一次创建，长期复用）。
-# ad-hoc 签名（codesign --sign -）每次重 build 都会生成新的 cdhash，TCC 数据库以为是新 app
-# 反复要求授权。用一个固定且被当前用户信任的 self-signed cert 让代码需求跨 build 稳定。
+# 签名模式：
+#   adhoc (默认)  : 不需要证书，适合开源用户直接 build/install。
+#   local         : 使用当前 Mac 自己生成并复用的本地证书，适合频繁 rebuild 的开发者。
+#   none          : 跳过 app bundle 签名（仅本机实验，不推荐发布）。
+#
+# 说明：Zoom 数学不依赖签名；屏幕抓帧权限由 macOS TCC 管理。
+# ad-hoc / none 在 rebuild 后可能让 TCC 认为这是新 app。代码层已经用
+# CGPreflightScreenCaptureAccess() 做只读预检，未授权时不启动 SCStream，
+# 避免系统权限弹窗死循环。
+SIGNING_MODE="${QH_SIGNING_MODE:-adhoc}"
 CERT_NAME="QuickHighlightLocalSigner"
 
 run_with_timeout() {
@@ -163,45 +170,35 @@ cp "$BIN_SRC" "$APP_DIR/Contents/MacOS/$EXEC_NAME"
 cp "$PLIST_SRC" "$APP_DIR/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 
-# 尝试创建/查找当前 Mac 自己的稳定证书。这个证书不能跨机器复用；
-# 开源用户需要在自己的 Mac 上生成自己的本地身份，正式分发应使用 Developer ID。
-# 没有稳定证书时默认停止，只有显式 QH_ALLOW_ADHOC=1 才允许临时 ad-hoc。
-set +e
-ensure_signing_identity
-ENSURE_RC=$?
-set -e
-if [ "$ENSURE_RC" != "0" ] || ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$CERT_NAME"; then
-    echo ""
-    echo "✗ 稳定本地证书不可用，已停止打包。"
-    echo "  为了避免再次进入「每次 build 都重新请求屏幕录制授权」死循环，"
-    echo "  build_app.sh 默认不再生成 ad-hoc 签名产物。"
-    echo ""
-    echo "  如果你明确只是临时调试、愿意重新授权，可以手动运行："
-    echo "    QH_ALLOW_ADHOC=1 bash build_app.sh"
-    echo ""
-    if [ "${QH_ALLOW_ADHOC:-}" != "1" ]; then
-        exit 1
-    fi
-    echo "⚠️  QH_ALLOW_ADHOC=1 已设置，本次按你的明确要求使用 ad-hoc 签名。"
-    codesign --force --deep --sign - "$APP_DIR" >/dev/null
-else
-    echo "→ 用稳定本地证书签名（${CERT_NAME}）..."
-    if ! run_with_timeout 20 codesign --force --deep --sign "$CERT_NAME" "$APP_DIR" >/dev/null; then
-        echo "✗ 稳定签名未能完成（通常是钥匙串正在等待私钥访问授权）。"
-        if [ "${QH_ALLOW_ADHOC:-}" != "1" ]; then
-            echo "  为避免重新触发屏幕录制授权死循环，默认不退回 ad-hoc。"
-            echo "  临时本机安装可运行：QH_ALLOW_ADHOC=1 bash build_app.sh"
+case "$SIGNING_MODE" in
+    adhoc)
+        echo "→ 使用无需证书的 ad-hoc 签名（默认开源安装模式）..."
+        codesign --force --deep --sign - "$APP_DIR" >/dev/null
+        ;;
+    local)
+        echo "→ 使用当前 Mac 的稳定本地证书签名（${CERT_NAME}）..."
+        ensure_signing_identity
+        if ! run_with_timeout 20 codesign --force --deep --sign "$CERT_NAME" "$APP_DIR" >/dev/null; then
+            echo "✗ 稳定签名未能完成（通常是钥匙串正在等待私钥访问授权）。"
+            echo "  可先用默认模式安装：bash build_app.sh"
+            echo "  或解决钥匙串私钥访问后重试：QH_SIGNING_MODE=local bash build_app.sh"
             exit 1
         fi
-        echo "⚠️  QH_ALLOW_ADHOC=1 已设置，本次按你的明确要求使用 ad-hoc 签名。"
-        codesign --force --deep --sign - "$APP_DIR" >/dev/null
-    fi
-    SIGN_AUTH="$(codesign -dv --verbose=4 "$APP_DIR" 2>&1 | grep -E '^Authority|^TeamIdentifier|^Signature=' | head -5)"
-    echo "$SIGN_AUTH" | sed 's/^/  ✓ /'
-    if codesign -dv --verbose=4 "$APP_DIR" 2>&1 | grep -q 'Signature=adhoc'; then
-        echo "✗ 签名结果仍是 ad-hoc，拒绝继续安装"
+        ;;
+    none)
+        echo "→ 跳过 app bundle 签名（QH_SIGNING_MODE=none，本机实验模式）..."
+        ;;
+    *)
+        echo "✗ 未知 QH_SIGNING_MODE=${SIGNING_MODE}（可选：adhoc / local / none）"
         exit 1
-    fi
+        ;;
+esac
+
+SIGN_AUTH="$(codesign -dv --verbose=4 "$APP_DIR" 2>&1 | grep -E '^Authority|^TeamIdentifier|^Signature=' | head -5 || true)"
+if [ -n "$SIGN_AUTH" ]; then
+    echo "$SIGN_AUTH" | sed 's/^/  ✓ /'
+else
+    echo "  ✓ app bundle 未签名或仅主二进制保留工具链签名"
 fi
 
 echo "→ 关闭旧实例 ..."
@@ -212,7 +209,7 @@ sleep 0.3
 # 踩过的坑（曲率 2026-05-01 反馈）—— Spotlight 搜「快捷高光」会列出多个不同路径的 .app
 # （/Applications + 桌面 + 旧 dist/ + 旧位置移动后的残留），用户根本不知道双击哪个才是最新版，
 # 导致反复测「这个 bug 修没修」时验错了 binary，认知严重错位。
-# 修复：每次 build 前用 mdfind 主动扫一遍，干掉除「dist/ + /Applications + 桌面」之外的全部副本。
+# 修复：每次 build 前用 mdfind 主动扫一遍，干掉除当前构建临时路径和 /Applications 之外的全部副本。
 echo "→ 清理机器上其他位置的「快捷高光 / CursorMagnifier」老残留 ..."
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 KEEP_PATHS=(
@@ -246,6 +243,13 @@ xattr -dr com.apple.quarantine "$INSTALL_PATH" 2>/dev/null || true
 echo "→ 重新注册到 Launch Services（刷图标缓存） ..."
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "$INSTALL_PATH" 2>/dev/null || true
+
+if [ "${QH_KEEP_DIST_APP:-}" != "1" ]; then
+    echo "→ 删除 dist 中的临时 .app，避免 Spotlight/用户误启动第二份副本 ..."
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -u "$APP_DIR" 2>/dev/null || true
+    rm -rf "$APP_DIR" 2>/dev/null || true
+fi
 
 echo "→ 清理桌面旧副本，避免误启动另一个代码身份 ..."
 rm -f "${DESKTOP_DIR}/${APP_NAME}" "${DESKTOP_DIR}/${APP_NAME}的替身" 2>/dev/null || true

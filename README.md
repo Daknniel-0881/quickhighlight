@@ -32,8 +32,8 @@
 
 ### 系统集成
 - 🎬 **开机自启**：可选，由 `SMAppService` 管理
-- 🔐 **稳定本地代码签名保护**：默认使用 `QuickHighlightLocalSigner`，避免 ad-hoc rebuild 让 macOS 把 App 当成新程序反复请求屏幕录制权限
-- 🖼 **桌面快捷方式带 Logo**：自动复制完整 .app 到桌面，Finder 直接显示应用图标
+- 🔐 **无证书默认安装**：默认不要求本地证书；频繁开发 rebuild 时可选 `QH_SIGNING_MODE=local`
+- 🧹 **单一安装副本**：只保留 `/Applications/快捷高光.app`，避免桌面/`dist` 副本造成授权身份错位
 - 📍 **多显示器感知**：副屏暂不放大（SCStream 当前仅抓主屏），不会出错或卡死
 
 ---
@@ -67,9 +67,9 @@ bash build_app.sh
 1. `swift build -c release` 编译
 2. 用 `generate_icon.swift` 生成图标 `.icns`
 3. 打包成 `dist/快捷高光.app`
-4. 用稳定本地证书签名（首次自动创建 `QuickHighlightLocalSigner`）
+4. 默认使用无需证书的 ad-hoc 签名（可选 `QH_SIGNING_MODE=local` 稳定本地签名）
 5. 安装到 `/Applications/快捷高光.app`
-6. 清理桌面旧副本，避免误启动另一个代码身份
+6. 清理桌面和 `dist/` 临时副本，避免误启动另一个代码身份
 7. 重新注册到 Launch Services 刷图标缓存
 8. 关闭旧实例，准备启动新版本
 
@@ -84,7 +84,7 @@ bash build_app.sh
 | **辅助功能** | 监听全局热键（按住激活、组合键切换形状）| 系统设置 → 隐私与安全性 → 辅助功能 |
 | **屏幕录制** | 抓主屏画面给放大圈显示 | 系统设置 → 隐私与安全性 → 屏幕录制 |
 
-> macOS 的屏幕录制授权和 App 代码身份绑定。`build_app.sh` 默认拒绝生成 ad-hoc 签名产物，避免重 build 后 cdhash 漂移导致反复授权。若只是临时本机调试，可显式运行 `QH_ALLOW_ADHOC=1 bash build_app.sh`，但这可能让系统再次请求屏幕录制授权。
+> macOS 的屏幕录制授权和 App 代码身份绑定。默认安装不需要证书，但每次 rebuild 后系统仍可能把新二进制当成另一个 App。快捷高光不会反复弹权限窗；如果抓帧权限未被当前 `/Applications/快捷高光.app` 身份识别，放大圈会先透明高光，需要在系统设置里把这一份 App 加回权限列表。
 
 ### 权限与签名 FAQ
 
@@ -98,14 +98,16 @@ bash build_app.sh
 
 **签名的意义是什么？可以删掉吗？**
 
-可以删掉，但不推荐作为日常 build。没有稳定签名时，`codesign --sign -` 会生成 ad-hoc 签名；每次 rebuild 的 cdhash 可能变化，TCC 会把它当成一个新 App，于是你明明已经给“快捷高光”开了权限，系统仍可能再次弹权限框。
+可以。签名/证书不是 Zoom 功能的技术前提。仓库默认不要求证书，只做无需证书的 ad-hoc 安装；代码会在未授权时静默降级，不会反复触发系统权限弹窗。
+
+代价是：频繁 rebuild 时，macOS 仍可能因为二进制身份变化而不认旧授权。此时不是 Zoom 数学坏了，而是当前 `/Applications/快捷高光.app` 没有拿到屏幕像素。开发者如果想让同一台 Mac 上的 rebuild 更稳定，可以显式使用 `QH_SIGNING_MODE=local bash build_app.sh`。
 
 **开源用户在自己的 Mac 上怎么办？**
 
 本地自签证书不能跨电脑复用，仓库也不会携带任何人的私钥。每个自己 build 的用户有两条路：
 
-1. 推荐：运行 `bash build_app.sh`，在自己的 Mac 上生成并复用 `QuickHighlightLocalSigner`。
-2. 临时调试：运行 `QH_ALLOW_ADHOC=1 bash build_app.sh`，接受后续 rebuild 可能需要重新授权。
+1. 普通使用：运行 `bash build_app.sh`，安装后给 `/Applications/快捷高光.app` 授权一次。
+2. 频繁开发：运行 `QH_SIGNING_MODE=local bash build_app.sh`，在自己的 Mac 上生成并复用 `QuickHighlightLocalSigner`。
 
 如果未来发布正式二进制，最好使用 Apple Developer ID 签名并 notarize。那样所有用户下载同一个发布包时，代码身份对升级更稳定。
 
@@ -242,15 +244,21 @@ ctx.draw(img, in: CGRect(x: 0, y: 0, width: circleRect.width, height: circleRect
 
 用 `NSEvent.addGlobalMonitorForEvents(.keyDown)` + `addLocalMonitorForEvents` 双管齐下：global 接其他 app 内的按键，local 接自家窗口的按键并能消费事件（避免误触表单）。已授权辅助功能即可工作，**不需要额外授权 Input Monitoring**。
 
-### 稳定本地代码签名（重 build 后尽量不弹权限）
+### 签名模式（默认不需要证书）
 
-`codesign --sign -` ad-hoc 签名每次重 build 都会生成新的 cdhash，TCC 数据库以为是新 app 反复要求授权。`build_app.sh` 优先使用本地自签 `QuickHighlightLocalSigner` 长期复用，并且默认不再悄悄退回 ad-hoc：
+默认安装不需要证书：
 
 ```bash
 bash build_app.sh
 ```
 
-`QuickHighlightLocalSigner` 只属于当前 Mac，不能提交到仓库，也不能替其他电脑解决权限。它的作用只是让同一台机器上的本地 rebuild 尽量保持同一个代码身份。如果钥匙串私钥访问授权未完成，脚本会停止并说明原因。临时调试可以显式设置 `QH_ALLOW_ADHOC=1`，但发布/日常使用不推荐。
+如果你在同一台 Mac 上频繁 rebuild，想尽量减少 TCC 因 cdhash 变化而不认旧授权，可以选择本地稳定签名：
+
+```bash
+QH_SIGNING_MODE=local bash build_app.sh
+```
+
+`QuickHighlightLocalSigner` 只属于当前 Mac，不能提交到仓库，也不能替其他电脑解决权限。正式分发仍建议 Apple Developer ID 签名并 notarize。
 
 ### Windows 版本
 
@@ -302,7 +310,7 @@ cd quickhighlight-win
 ```bash
 swift build                      # debug build
 swift build -c release           # release build
-bash build_app.sh                # 完整流程：编译 → 签名 → 装 /Applications → 清理旧副本
+bash build_app.sh                # 完整流程：编译 → ad-hoc 安装 → 装 /Applications → 清理旧副本
 ```
 
 调试时直接跑 `.build/debug/CursorMagnifier`，菜单栏图标会出现，但你需要先给这个 debug binary 单独授一次屏幕录制权限。

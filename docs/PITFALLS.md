@@ -128,11 +128,15 @@ cursorPos = NSPoint(
 ### P-301 · `codesign --sign -` ad-hoc 签名 → 每次重 build 都会重新弹权限
 **症状**：每次 `bash build_app.sh` 后启动 app，TCC 都重新弹一次「屏幕录制」「辅助功能」授权框。
 **根因**：ad-hoc 签名每次生成新 cdhash，TCC 数据库以为是全新 app。
-**正确做法**：用当前 Mac 自己生成并复用的稳定本地自签证书 `QuickHighlightLocalSigner`：
+**正确做法**：默认不主动请求权限，先用 `CGPreflightScreenCaptureAccess()` 做只读预检；未授权时不启动 SCStream，避免弹窗死循环。普通开源安装不要求证书：
 ```bash
 bash build_app.sh
 ```
-build_app.sh 里 `ensure_signing_identity()` 一次性创建并复用。这个证书不能跨电脑复用，也不能提交到开源仓库；正式分发应使用 Developer ID 签名 + notarize。
+频繁本地 rebuild 的开发者可显式启用稳定本地签名：
+```bash
+QH_SIGNING_MODE=local bash build_app.sh
+```
+这个证书不能跨电脑复用，也不能提交到开源仓库；正式分发应使用 Developer ID 签名 + notarize。
 
 ### P-302 · 只保留并启动 `/Applications` 里的唯一 App
 **症状**：双击桌面快捷方式弹一次权限，再双击 /Applications 又弹一次。
@@ -182,7 +186,7 @@ xattr -dr com.apple.quarantine "$APP_PATH"
 mdfind 'kMDItemFSName == "*快捷高光*"cd || kMDItemFSName == "CursorMagnifier*"cd' \
     | grep -E '\.app$' | grep -vE "(/Sources/|/.build/|/Resources/|/.git/)"
 ```
-对每个匹配项，检查不在 `KEEP_PATHS`（dist/ + /Applications + 桌面）就 `lsregister -u` 反注册 + `rm -rf` 删除。
+对每个匹配项，检查不在当前构建临时路径或 `/Applications` 就 `lsregister -u` 反注册 + `rm -rf` 删除；安装完成后默认删除 `dist/快捷高光.app`，机器上只留下 `/Applications/快捷高光.app`。
 **禁止**：build 完只 `cp` 不清理 → 老路径会越堆越多。
 
 ### P-502 · App 改名后 Launch Services 注册表会留下旧条目
@@ -191,7 +195,7 @@ mdfind 'kMDItemFSName == "*快捷高光*"cd || kMDItemFSName == "CursorMagnifier
 
 ### P-503 · 多个调试 binary 路径让用户分不清测哪个
 **症状**：曲率不知道用 `/Applications/快捷高光.app` 还是 `.build/release/CursorMagnifier` 还是 `dist/快捷高光.app/Contents/MacOS/CursorMagnifier`。
-**正确做法**：build_app.sh 完成时**只剩下两个**用户可见入口 —— `/Applications/快捷高光.app` + 桌面快捷方式（共享 cdhash），其它都是开发产物（dist/、.build/）。所有给曲率的启动指令必须明确指向 `/Applications/快捷高光.app/Contents/MacOS/CursorMagnifier`，不要用 `dist/` 或 `.build/`。
+**正确做法**：build_app.sh 完成时用户可见入口只剩 `/Applications/快捷高光.app`。所有给曲率的启动指令必须明确指向 `/Applications/快捷高光.app/Contents/MacOS/CursorMagnifier`，不要用 `dist/` 或 `.build/`。
 
 ### P-504 · 没有版本号 / BUILD ID，肉眼无法验证跑的是不是新版
 **症状**：曲率说「修复版本不生效」，实际上跑的是缓存里的老进程或老菜单栏图标，但他没法肉眼区分。
@@ -263,9 +267,9 @@ RegisterEventHotKey(UInt32(keyCode), UInt32(carbonModifiers), hotKeyID,
 **症状**：用户已经手动勾选屏幕录制权限，但 ad-hoc 重签后每次启动都被反复提示「需要授权屏幕录制」。
 **根因**：ad-hoc 签名 cdhash 每次 build 都变，TCC 数据库里旧 cdhash 的授权对新 cdhash 无效，`CGPreflightScreenCaptureAccess()` 返回 false。代码盲目按 preflight 结果决定弹窗 → 反复打扰。
 **正确做法**：
-- 一次成功授权后写入 `kPermGrantedOnce = true`，永久消音（即使 preflight 后续返回 false）。
 - 启动时绝不调用 `CGRequestScreenCaptureAccess()` —— 这函数本身会触发系统弹框。只用只读的 `CGPreflightScreenCaptureAccess()` 检测。
-- 真正首启才弹一次告知；之后无论 cdhash 如何漂移，永久静默。
+- preflight false 时直接跳过 SCStream，lens 内部透明，只画 donut + ring。
+- 自动重试前再次 preflight；如果当前身份仍未授权，停止重试，避免系统反复弹窗。
 
 ### P-903 · 菜单栏 App 必须显式拒绝「最后窗口关闭即退出」
 **症状**：APP 用着用着自动退出，尤其是关掉设置窗口之后。

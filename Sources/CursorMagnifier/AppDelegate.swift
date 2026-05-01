@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateStatusIcon(captureHealthy: false)
             self?.scheduleSilentCaptureRestartIfSafe()
         }
-        // 权限由系统首启时自然处理；App 自己不再弹任何权限引导，避免授权死循环打扰录制。
+        // App 自己不弹任何权限引导；startScreenCapture() 只做只读预检，失败就静默降级。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.silenceLegacyPermissionPromptState()
             self?.startScreenCapture()
@@ -118,8 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 应用启动后即启动屏幕抓帧（持续运行），按热键时直接拿最新帧。
     /// 用户体验铁律：失败永远不弹窗，只 NSLog + 菜单栏图标轻提示 + 后台静默指数退避重启。
-    /// CGPreflight 在 ad-hoc 重签 cdhash 漂移时会假阴性，所以不预检——直接让 SCStream 试，
-    /// 真正不行了再静默重试，绝不打扰用户。
+    /// 只用 CGPreflightScreenCaptureAccess() 做只读预检，不调用 CGRequestScreenCaptureAccess()。
+    /// 如果当前 app 身份未被 TCC 认可，就保持 lens 透明高光，不启动 SCStream 触发系统弹窗。
     private func startScreenCapture() {
         guard CGPreflightScreenCaptureAccess() else {
             NSLog("[快捷高光] 当前 App 身份尚未获得屏幕录制权限，跳过自动抓帧以避免系统弹窗循环。")
