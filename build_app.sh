@@ -93,16 +93,17 @@ echo "→ 重新注册到 Launch Services（刷图标缓存） ..."
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "$INSTALL_PATH" 2>/dev/null || true
 
-echo "→ 桌面快捷方式（symlink 到 /Applications，避免双 binary 让 TCC 反复要授权）..."
-# 之前 cp -R 整个 .app 到桌面，造成 TCC 数据库出现两条独立授权记录，
-# 任何一条失效都会触发权限弹框。symlink 让两边指向同一份 binary、同一个 cdhash。
-# .app 后缀的 symlink 在 Finder 中会自动继承目标的图标（icns 在 target bundle 内）。
+echo "→ 桌面快捷方式：复制完整 .app（带完整 icon resource，Finder 直接显示 logo）..."
+# symlink 在某些 macOS 版本里 Finder 不刷图标。直接 cp -R 整份 .app 最稳。
+# 用稳定本地签名后两份 .app 共享同一个 cdhash，TCC 只记一条授权，不会反复弹权限。
 rm -f "${DESKTOP_DIR}/${APP_NAME}" "${DESKTOP_DIR}/${APP_NAME}的替身" 2>/dev/null || true
 rm -rf "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
-ln -s "$INSTALL_PATH" "${DESKTOP_DIR}/${APP_NAME}.app"
+cp -R "$INSTALL_PATH" "${DESKTOP_DIR}/${APP_NAME}.app"
+xattr -cr "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
+xattr -dr com.apple.provenance "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
+xattr -dr com.apple.quarantine "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
-# 触发 Finder 图标缓存刷新
 touch "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
 
 echo ""

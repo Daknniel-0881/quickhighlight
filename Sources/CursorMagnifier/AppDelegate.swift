@@ -280,21 +280,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // 之前已经授权过一次，但现在某项 false（多半是 ad-hoc 重签 cdhash 变化导致的临时失效）：
-        // 静默尝试触发系统重新对接（CGRequestScreenCaptureAccess），不弹我们自己的 alert
+        // 曾经全部授权过：永久静默。即使现在某项 false（ad-hoc 重签 cdhash 变化导致的临时
+        // 失效），也不再弹任何我们或系统的对话框。用户授权过一次就一辈子不再被打扰。
+        // ⚠️ 关键：不调用 CGRequestScreenCaptureAccess() —— 这个函数本身会触发系统弹框。
         if defaults.bool(forKey: kPermGrantedOnce) {
-            if !scOk { _ = CGRequestScreenCaptureAccess() }
             return
         }
 
-        // 24 小时内已经弹过一次自定义 alert：不再骚扰用户
+        // 之前弹过一次（任何时间）：永久不再弹。曲率明确要求"开过就不再问"，
+        // 优于按 24h 周期重弹。
         let lastShown = defaults.double(forKey: kPermPromptShownAt)
-        if lastShown > 0, Date().timeIntervalSince1970 - lastShown < 24 * 3600 {
-            if !scOk { _ = CGRequestScreenCaptureAccess() }
+        if lastShown > 0 {
             return
         }
 
-        // 真·首次（或 24h 后重提）：显式向用户解释一次
+        // 真·首次：弹一次告知用户去开权限。这次会触发系统弹框（CGRequestScreenCaptureAccess）
         if !scOk { _ = CGRequestScreenCaptureAccess() }
         let alert = NSAlert()
         alert.messageText = "快捷高光 首次启动需要授权两项系统权限"

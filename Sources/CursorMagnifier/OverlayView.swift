@@ -165,14 +165,20 @@ final class OverlayView: NSView {
         ctx.setFillColor(CGColor(gray: 0, alpha: dimAlpha))
         ctx.fillPath(using: .evenOdd)
 
-        // 2) 内部放大画面 — 直接用 CGContext.draw(cgImage:in:)，让 CG 自己按 src/dst 比例缩放
-        //   (NSView isFlipped=false → 默认 y-up 坐标系，CG 会正向绘制，不需要手动翻转)
+        // 2) 内部放大画面 — 改用经典 transform + ctx.draw 路径，确保 zoom 数学稳定。
+        //    之前 ctx.draw(img, in: circleRect) 在某些 macOS 版本下，对 CGImage 的目标矩形
+        //    缩放可能不按 src→dst 像素比线性插值，导致 zoom 视觉效果不明显。
+        //    手动 translate + scale 后用 (0,0,w,h) 绘制，路径无歧义。
         if let img = capturedCGImage {
             ctx.saveGState()
             ctx.addPath(innerPath)
             ctx.clip()
             ctx.interpolationQuality = .high
-            ctx.draw(img, in: circleRect)
+            // 把坐标原点移到 circleRect 左上，然后 y 轴翻转（CGImage 是 top-down 像素，
+            // 当前 ctx 是 y-up），这样 ctx.draw(img, in: 0,0,w,h) 会精确缩放到 circleRect
+            ctx.translateBy(x: circleRect.minX, y: circleRect.maxY)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(img, in: CGRect(x: 0, y: 0, width: circleRect.width, height: circleRect.height))
             ctx.restoreGState()
         }
 

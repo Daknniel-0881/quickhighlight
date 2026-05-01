@@ -109,8 +109,8 @@ struct SettingsView: View {
                         title: "高度",
                         valueText: "\(Int(store.rectHeight)) px",
                         value: $store.rectHeight,
-                        range: 80...600,
-                        step: 10
+                        range: 30...600,
+                        step: 5
                     )
                 }
                 LabeledSlider(
