@@ -6,6 +6,10 @@ using System.Windows.Media.Imaging;
 using QuickHighlight.Capture;
 using QuickHighlight.Settings;
 using Windows.Graphics.Imaging;
+using MediaBrushes = System.Windows.Media.Brushes;
+using MediaColor = System.Windows.Media.Color;
+using MediaPen = System.Windows.Media.Pen;
+using WpfSize = System.Windows.Size;
 
 namespace QuickHighlight.Overlay;
 
@@ -37,13 +41,13 @@ public sealed class OverlaySurface : FrameworkElement
         if (_settings is null || _capturer is null) return;
 
         var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-        var inner = new Size(_settings.InnerWidth, _settings.InnerHeight);
+        var inner = new WpfSize(_settings.InnerWidth, _settings.InnerHeight);
         var lens = new Rect(
             _cursor.X - inner.Width / 2,
             _cursor.Y - inner.Height / 2,
             inner.Width,
             inner.Height);
-        var lensGeometry = _settings.Shape == MagnifierShape.Circle
+        Geometry lensGeometry = _settings.Shape == MagnifierShape.Circle
             ? new EllipseGeometry(lens)
             : new RectangleGeometry(lens, 8, 8);
 
@@ -51,7 +55,7 @@ public sealed class OverlaySurface : FrameworkElement
         donut.Children.Add(new RectangleGeometry(bounds));
         donut.Children.Add(lensGeometry);
         dc.DrawGeometry(
-            new SolidColorBrush(Color.FromArgb((byte)(_settings.DimAlpha * 255), 0, 0, 0)),
+            new SolidColorBrush(MediaColor.FromArgb((byte)(_settings.DimAlpha * 255), 0, 0, 0)),
             null,
             donut);
 
@@ -59,8 +63,8 @@ public sealed class OverlaySurface : FrameworkElement
 
         if (_settings.ShowRing)
         {
-            dc.DrawGeometry(null, new Pen(new SolidColorBrush(Color.FromArgb(220, 255, 255, 255)), 2), lensGeometry);
-            dc.DrawGeometry(null, new Pen(new SolidColorBrush(Color.FromArgb(90, 0, 0, 0)), 1), lensGeometry);
+            dc.DrawGeometry(null, new MediaPen(new SolidColorBrush(MediaColor.FromArgb(220, 255, 255, 255)), 2), lensGeometry);
+            dc.DrawGeometry(null, new MediaPen(new SolidColorBrush(MediaColor.FromArgb(90, 0, 0, 0)), 1), lensGeometry);
         }
 
         if (_settings.ShowZoomLabel)
@@ -68,10 +72,10 @@ public sealed class OverlaySurface : FrameworkElement
             var text = new FormattedText(
                 $"{_settings.Zoom:F1}x",
                 Thread.CurrentThread.CurrentUICulture,
-                FlowDirection.LeftToRight,
+                System.Windows.FlowDirection.LeftToRight,
                 new Typeface("Segoe UI Semibold"),
                 14,
-                Brushes.White,
+                MediaBrushes.White,
                 VisualTreeHelper.GetDpi(this).PixelsPerDip);
             dc.DrawText(text, new System.Windows.Point(_cursor.X - text.Width / 2, lens.Bottom + 6));
         }

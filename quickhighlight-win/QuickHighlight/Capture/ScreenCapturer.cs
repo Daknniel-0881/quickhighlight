@@ -186,7 +186,7 @@ public sealed class ScreenCapturer : IDisposable
                     _lastSize);
             }
 
-            using var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask();
+            using var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface);
             var converted = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
             lock (_frameLock)
             {
