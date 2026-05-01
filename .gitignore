@@ -1,0 +1,29 @@
+# Build artifacts
+.build/
+dist/
+*.icns
+Resources/AppIcon.iconset/
+Resources/AppIcon.icns
+
+# Xcode (in case anyone opens it in Xcode later)
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+._*
+
+# Swift Package Manager
+Package.resolved
+.swiftpm/
+
+# Local context (Claude / private notes)
+.claude/
+.omc/
+
+# Editor
+.vscode/
+.idea/
+*.swp
