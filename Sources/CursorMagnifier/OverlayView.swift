@@ -143,11 +143,16 @@ final class OverlayView: NSView {
         var processedCI = fullCI.cropped(to: ciCropRect)
 
         // 锐化（zoom > 1.0 且用户未关）：CIUnsharpMask 抵消上采样模糊
+        // 注意：zoom 越高、crop 区域越小，单位像素被放大得越厉害，需要越强的锐化才能视觉可见。
+        // 之前 radius=1.2/intensity=0.5 在 zoom=1.5 的小 crop（68px 量级）上几乎看不出 ——
+        // 锐化效果与 (kernel_radius / image_dimension) 成比例，crop 越小绝对像素越少，必须放大参数。
         if SettingsStore.shared.sharpenEnabled, z > 1.05 {
             let f = CIFilter.unsharpMask()
             f.inputImage = processedCI
-            f.radius = 1.2
-            f.intensity = 0.5
+            // radius 跟 zoom 走：zoom 1×~6× → radius 1.5~3.5
+            f.radius = Float(min(3.5, 1.0 + z * 0.45))
+            // intensity 也跟 zoom 走：zoom 1×~6× → intensity 0.6~1.2
+            f.intensity = Float(min(1.2, 0.4 + z * 0.15))
             if let out = f.outputImage {
                 processedCI = out
             }
@@ -182,20 +187,24 @@ final class OverlayView: NSView {
         ctx.setFillColor(CGColor(gray: 0, alpha: dimAlpha))
         ctx.fillPath(using: .evenOdd)
 
-        // 2) 内部放大画面 — 改用经典 transform + ctx.draw 路径，确保 zoom 数学稳定。
-        //    之前 ctx.draw(img, in: circleRect) 在某些 macOS 版本下，对 CGImage 的目标矩形
-        //    缩放可能不按 src→dst 像素比线性插值，导致 zoom 视觉效果不明显。
-        //    手动 translate + scale 后用 (0,0,w,h) 绘制，路径无歧义。
+        // 2) 内部放大画面 —— 直接 ctx.draw(img, in: circleRect)
+        //
+        // 踩坑记录：之前为了"修 zoom 不生效"加了一段手动 translate + scaleBy(x:1, y:-1)，
+        // 注释自圆其说为「CGImage top-down vs ctx y-up 需要翻 Y」。这是误解 ——
+        // AppKit NSView (isFlipped=false) 的 CGContext 在 ctx.draw(cgImage, in: rect) 时
+        // **已经会自动正向映射 top-down CGImage 到 y-up rect**，不需要也不能再手动翻。
+        // 手动加了那次 scaleBy(-1) 后，画面确实「精确缩放到 circleRect」了，但同时把图像
+        // 上下颠倒了 —— 用户看到的就是倒立的桌面画面，看着很假。
+        //
+        // 修复：删掉手动翻转，直接 draw 进 circleRect。zoom 数学已经在 updateForCursor()
+        // 那一层算好（用 captureSizePt = innerSize / zoom 决定 crop 大小，再用 createCGImage
+        // 物化），lens 区域只负责把这张「已经是被裁好的小图」按 lens 几何拉伸显示即可。
         if let img = capturedCGImage {
             ctx.saveGState()
             ctx.addPath(innerPath)
             ctx.clip()
             ctx.interpolationQuality = .high
-            // 把坐标原点移到 circleRect 左上，然后 y 轴翻转（CGImage 是 top-down 像素，
-            // 当前 ctx 是 y-up），这样 ctx.draw(img, in: 0,0,w,h) 会精确缩放到 circleRect
-            ctx.translateBy(x: circleRect.minX, y: circleRect.maxY)
-            ctx.scaleBy(x: 1, y: -1)
-            ctx.draw(img, in: CGRect(x: 0, y: 0, width: circleRect.width, height: circleRect.height))
+            ctx.draw(img, in: circleRect)
             ctx.restoreGState()
         }
 
