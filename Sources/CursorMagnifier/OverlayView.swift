@@ -1,4 +1,14 @@
 import Cocoa
+import CoreImage
+import CoreImage.CIFilterBuiltins
+
+/// CIContext 单例 — 每帧重建会很重；锐化路径在主线程跑，需要稳定上下文复用
+private let sharpenCIContext: CIContext = {
+    CIContext(options: [
+        .useSoftwareRenderer: false,
+        .cacheIntermediates: false
+    ])
+}()
 
 final class OverlayView: NSView {
     /// 鼠标在 view 内的坐标（左下原点，与 isFlipped=false 一致）
@@ -116,6 +126,21 @@ final class OverlayView: NSView {
             return
         }
 
+        // 锐化（仅 zoom > 1.0 且用户未关）—— CIUnsharpMask 抵消上采样模糊
+        // 经验值：radius 1.2 / intensity 0.5 在 60fps 下不卡，文字边缘明显锐
+        if SettingsStore.shared.sharpenEnabled, z > 1.05 {
+            let ci = CIImage(cgImage: cropped)
+            let f = CIFilter.unsharpMask()
+            f.inputImage = ci
+            f.radius = 1.2
+            f.intensity = 0.5
+            if let out = f.outputImage,
+               let sharpened = sharpenCIContext.createCGImage(out, from: ci.extent) {
+                capturedCGImage = sharpened
+                needsDisplay = true
+                return
+            }
+        }
         capturedCGImage = cropped
         needsDisplay = true
     }
@@ -162,6 +187,24 @@ final class OverlayView: NSView {
             ctx.setLineWidth(1)
             ctx.addPath(shapePath(in: circleRect.insetBy(dx: -1.5, dy: -1.5)))
             ctx.strokePath()
+        }
+
+        // 4) 当前放大倍率小标签（用户验证 zoom 是否生效）
+        if SettingsStore.shared.showZoomLabel {
+            let label = String(format: "%.1f×", zoom)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
+                .foregroundColor: NSColor.white,
+                .strokeColor: NSColor.black.withAlphaComponent(0.85),
+                .strokeWidth: -3.5
+            ]
+            let str = NSAttributedString(string: label, attributes: attrs)
+            let strSize = str.size()
+            let labelOrigin = NSPoint(
+                x: cursorPos.x - strSize.width / 2,
+                y: circleRect.minY - strSize.height - 6
+            )
+            str.draw(at: labelOrigin)
         }
     }
 }

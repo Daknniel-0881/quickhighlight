@@ -91,6 +91,14 @@ final class SettingsStore: ObservableObject {
     @Published var toggleShapeModifiers: UInt {
         didSet { defaults.set(toggleShapeModifiers, forKey: Keys.toggleShapeModifiers) }
     }
+    /// 抗模糊锐化（CIUnsharpMask）—— 默认开启，仅 zoom > 1.0 时生效
+    @Published var sharpenEnabled: Bool {
+        didSet { defaults.set(sharpenEnabled, forKey: Keys.sharpenEnabled) }
+    }
+    /// 在放大圈外侧显示当前放大倍率小标识，方便对比 zoom 调整效果
+    @Published var showZoomLabel: Bool {
+        didSet { defaults.set(showZoomLabel, forKey: Keys.showZoomLabel) }
+    }
     @Published var launchAtLogin: Bool {
         didSet {
             defaults.set(launchAtLogin, forKey: Keys.launchAtLogin)
@@ -109,6 +117,8 @@ final class SettingsStore: ObservableObject {
         static let shape = "shape"
         static let toggleShapeKeyCode = "toggleShapeKeyCode"
         static let toggleShapeModifiers = "toggleShapeModifiers"
+        static let sharpenEnabled = "sharpenEnabled"
+        static let showZoomLabel = "showZoomLabel"
         static let launchAtLogin = "launchAtLogin"
         static let settingsVersion = "settingsVersion"
     }
@@ -130,6 +140,8 @@ final class SettingsStore: ObservableObject {
             Keys.shape: MagnifierShape.circle.rawValue,
             Keys.toggleShapeKeyCode: -1,            // 默认未设置
             Keys.toggleShapeModifiers: 0,
+            Keys.sharpenEnabled: true,              // 默认开启锐化抗模糊
+            Keys.showZoomLabel: false,              // 默认不显示倍率标签（避免录屏干扰）
             Keys.launchAtLogin: false,
             Keys.settingsVersion: 0
         ])
@@ -156,6 +168,8 @@ final class SettingsStore: ObservableObject {
         self.shape = MagnifierShape(rawValue: shapeRaw) ?? .circle
         self.toggleShapeKeyCode = defaults.integer(forKey: Keys.toggleShapeKeyCode)
         self.toggleShapeModifiers = UInt(defaults.integer(forKey: Keys.toggleShapeModifiers))
+        self.sharpenEnabled = defaults.bool(forKey: Keys.sharpenEnabled)
+        self.showZoomLabel = defaults.bool(forKey: Keys.showZoomLabel)
         self.launchAtLogin = LaunchAtLogin.isEnabled
     }
 

@@ -4,6 +4,8 @@ import Combine
 
 extension Notification.Name {
     static let quickHighlightPreviewOverlay = Notification.Name("com.curvature.quickhighlight.previewOverlay")
+    static let quickHighlightTogglePersistentPreview = Notification.Name("com.curvature.quickhighlight.togglePersistentPreview")
+    static let quickHighlightPersistentPreviewStateChanged = Notification.Name("com.curvature.quickhighlight.persistentPreviewStateChanged")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -12,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var updateTimer: Timer?
     private var isActive = false
+    /// 持续预览模式：开启后 overlay 一直保持显示，便于在 Settings 里实时调参对比效果
+    private(set) var persistentPreview = false
 
     private let hotkeyMonitor = HotkeyMonitor()
     private var cancellables: Set<AnyCancellable> = []
@@ -39,6 +43,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             selector: #selector(handlePreviewRequest),
             name: .quickHighlightPreviewOverlay,
             object: nil
+        )
+        // 监听持续预览开关
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleTogglePersistentPreview),
+            name: .quickHighlightTogglePersistentPreview,
+            object: nil
+        )
+    }
+
+    /// 切换持续预览模式：ON → 强制显示 overlay；OFF → 关闭并恢复正常按键控制
+    @objc private func handleTogglePersistentPreview() {
+        UserDefaults.standard.synchronize()
+        persistentPreview.toggle()
+        if persistentPreview {
+            // 开启：立即激活，强制显示
+            if !isActive { activate() }
+        } else {
+            // 关闭：仅当不是被热键按住时 deactivate
+            if isActive { deactivate() }
+        }
+        NotificationCenter.default.post(
+            name: .quickHighlightPersistentPreviewStateChanged,
+            object: nil,
+            userInfo: ["on": persistentPreview]
         )
     }
 
@@ -194,6 +223,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func deactivate() {
         guard isActive else { return }
+        // 持续预览模式下，松开热键不应该关闭 overlay
+        if persistentPreview { return }
         isActive = false
         overlayWindow?.orderOut(nil)
         stopTimer()

@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var store = SettingsStore.shared
     @State private var savedFlash = false
+    @State private var persistentPreviewOn = false
 
     var body: some View {
         TabView {
@@ -128,17 +129,33 @@ struct SettingsView: View {
                 )
             }
             Section {
+                Toggle("锐化（抗模糊）", isOn: $store.sharpenEnabled)
+                    .help("CIUnsharpMask 锐化，仅在放大倍率 > 1.0 时生效，让文字边缘更清晰")
+                Toggle("显示当前放大倍率", isOn: $store.showZoomLabel)
+                    .help("在放大圈下方显示 1.5× / 4.0× 这样的小标识，方便对比参数（录屏时建议关闭）")
+            } header: {
+                Text("画面增强")
+            }
+            Section {
                 HStack {
                     Button("恢复默认") { store.resetMagnifier() }
                     Spacer()
-                    Button("测试效果") {
+                    Button(persistentPreviewOn ? "停止持续预览" : "持续预览") {
+                        UserDefaults.standard.synchronize()
+                        NotificationCenter.default.post(
+                            name: .quickHighlightTogglePersistentPreview,
+                            object: nil
+                        )
+                    }
+                    .help("开启后放大圈一直显示，可以拖滑块实时对比效果。再点击或退出 App 时关闭。")
+                    Button("瞬时测试 (1.5s)") {
                         UserDefaults.standard.synchronize()
                         NotificationCenter.default.post(
                             name: .quickHighlightPreviewOverlay,
                             object: nil
                         )
                     }
-                    .help("立即在鼠标位置显示放大圈 1.5 秒，看看当前参数效果")
+                    .help("立即在鼠标位置显示放大圈 1.5 秒")
                     Button("保存") {
                         UserDefaults.standard.synchronize()
                         savedFlash = true
@@ -149,18 +166,27 @@ struct SettingsView: View {
                     .keyboardShortcut(.defaultAction)
                 }
             } footer: {
-                if savedFlash {
+                if persistentPreviewOn {
+                    Text("● 持续预览中 — 把鼠标移到任意窗口看效果，拖滑块即时对比。完成后再点一次按钮关闭。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else if savedFlash {
                     Text("✓ 已保存，参数立即生效")
                         .font(.caption)
                         .foregroundStyle(.green)
                 } else {
-                    Text("拖动滑块时已自动保存。「测试效果」按钮在鼠标位置预显示 1.5 秒，便于对比参数。")
+                    Text("拖动滑块时已自动保存。开启「持续预览」可一边调一边看真实效果。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for: .quickHighlightPersistentPreviewStateChanged)) { note in
+            if let on = note.userInfo?["on"] as? Bool {
+                persistentPreviewOn = on
+            }
+        }
     }
 }
 
