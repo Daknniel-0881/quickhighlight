@@ -4,15 +4,27 @@ struct SettingsView: View {
     @ObservedObject var store = SettingsStore.shared
     @State private var savedFlash = false
     @State private var persistentPreviewOn = false
+    @State private var selection: Int = {
+        // 截图诊断模式：通过环境变量预选 tab（QH_TAB=general/hotkey/magnifier）
+        switch ProcessInfo.processInfo.environment["QH_TAB"] {
+        case "general": return 0
+        case "hotkey":  return 1
+        case "magnifier": return 2
+        default: return 0
+        }
+    }()
 
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             generalTab
                 .tabItem { Label("通用", systemImage: "gearshape") }
+                .tag(0)
             hotkeyTab
                 .tabItem { Label("快捷键", systemImage: "command") }
+                .tag(1)
             magnifierTab
                 .tabItem { Label("放大镜", systemImage: "plus.magnifyingglass") }
+                .tag(2)
         }
         .frame(width: 520, height: 540)
     }

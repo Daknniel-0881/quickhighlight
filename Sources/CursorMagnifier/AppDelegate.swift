@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.ensurePermissions()
             self?.startScreenCapture()
+            if ProcessInfo.processInfo.environment["QH_OPEN_SETTINGS"] == "1" {
+                self?.openSettings()
+            }
         }
         // 屏幕拓扑变化时重建覆盖窗口（接显示器/分辨率变更）
         NotificationCenter.default.addObserver(

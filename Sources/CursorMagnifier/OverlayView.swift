@@ -120,28 +120,45 @@ final class OverlayView: NSView {
         // 边缘 clamp，避免靠近角落时 cropping 返回 nil
         let frameBounds = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
         cropRect = cropRect.intersection(frameBounds)
-        guard !cropRect.isEmpty, let cropped = frame.cropping(to: cropRect) else {
+        guard !cropRect.isEmpty else {
             capturedCGImage = nil
             needsDisplay = true
             return
         }
 
-        // 锐化（仅 zoom > 1.0 且用户未关）—— CIUnsharpMask 抵消上采样模糊
-        // 经验值：radius 1.2 / intensity 0.5 在 60fps 下不卡，文字边缘明显锐
+        // 关键修复：不用 frame.cropping(to:) ——它返回的 CGImage 是「父帧 buffer 的窗口视图」，
+        // 在 ctx.draw(in:rect) 渲染路径上有些 macOS/驱动版本会渲染父帧而不是裁剪区域，
+        // 导致看上去 zoom 不生效（用户自始至终都在看 1920×1080 整屏画面被缩到 lens 里）。
+        //
+        // 改用 CIImage.cropped + CIContext.createCGImage，强制把裁剪区域 render 成一张
+        // 独立、自洽的 CGImage（standalone bitmap），彻底解耦父帧。
+        // 注意：CIImage 用左下原点，cropRect 此时是左上原点（CGImage 坐标系），需翻 Y。
+        let fullCI = CIImage(cgImage: frame)
+        let ciCropRect = CGRect(
+            x: cropRect.minX,
+            y: CGFloat(frame.height) - cropRect.maxY,  // CGImage top-down → CIImage bottom-up
+            width: cropRect.width,
+            height: cropRect.height
+        )
+        var processedCI = fullCI.cropped(to: ciCropRect)
+
+        // 锐化（zoom > 1.0 且用户未关）：CIUnsharpMask 抵消上采样模糊
         if SettingsStore.shared.sharpenEnabled, z > 1.05 {
-            let ci = CIImage(cgImage: cropped)
             let f = CIFilter.unsharpMask()
-            f.inputImage = ci
+            f.inputImage = processedCI
             f.radius = 1.2
             f.intensity = 0.5
-            if let out = f.outputImage,
-               let sharpened = sharpenCIContext.createCGImage(out, from: ci.extent) {
-                capturedCGImage = sharpened
-                needsDisplay = true
-                return
+            if let out = f.outputImage {
+                processedCI = out
             }
         }
-        capturedCGImage = cropped
+
+        guard let materialized = sharpenCIContext.createCGImage(processedCI, from: ciCropRect) else {
+            capturedCGImage = nil
+            needsDisplay = true
+            return
+        }
+        capturedCGImage = materialized
         needsDisplay = true
     }
 
