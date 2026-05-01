@@ -38,6 +38,36 @@ struct GeometryRegression {
             fatalError("clamped crop grew past zoom-derived size: \(edge)")
         }
 
+        let waitingForPermission = CaptureRecoveryPolicy.action(
+            hasReceivedFrameSinceLaunch: false,
+            preflightGranted: false,
+            restartAttempts: 0,
+            maxRestartAttempts: 5
+        )
+        if waitingForPermission != .probePermission {
+            fatalError("first launch without current TCC permission should poll preflight only, got \(waitingForPermission)")
+        }
+
+        let canStartAfterGrant = CaptureRecoveryPolicy.action(
+            hasReceivedFrameSinceLaunch: false,
+            preflightGranted: true,
+            restartAttempts: 0,
+            maxRestartAttempts: 5
+        )
+        if canStartAfterGrant != .startCapture {
+            fatalError("preflight grant should start capture, got \(canStartAfterGrant)")
+        }
+
+        let transientStopAfterFrames = CaptureRecoveryPolicy.action(
+            hasReceivedFrameSinceLaunch: true,
+            preflightGranted: false,
+            restartAttempts: 2,
+            maxRestartAttempts: 5
+        )
+        if transientStopAfterFrames != .startCapture {
+            fatalError("after frames were received, transient stops should use capture restart, got \(transientStopAfterFrames)")
+        }
+
         print("geometry regression checks passed")
     }
 }

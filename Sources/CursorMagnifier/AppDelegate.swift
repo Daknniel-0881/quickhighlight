@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 5 次仍失败大概率是权限/cdhash 问题，再重试也只会反复触发系统级权限弹框
     private var captureRestartDelay: TimeInterval = 1.0
     private var captureRestartTimer: Timer?
+    private var capturePermissionProbeTimer: Timer?
+    private var capturePermissionProbeDelay: TimeInterval = 2.0
     private var captureRestartAttempts = 0
     private static let maxCaptureRestartAttempts = 5
     private var hasReceivedFrameSinceLaunch = false
@@ -106,6 +108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopTimer()
         captureRestartTimer?.invalidate()
         captureRestartTimer = nil
+        capturePermissionProbeTimer?.invalidate()
+        capturePermissionProbeTimer = nil
         Task { await ScreenCapturer.shared.stop() }
     }
 
@@ -124,8 +128,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard CGPreflightScreenCaptureAccess() else {
             NSLog("[快捷高光] 当前 App 身份尚未获得屏幕录制权限，跳过自动抓帧以避免系统弹窗循环。")
             updateStatusIcon(captureHealthy: false)
+            scheduleCapturePermissionProbe()
             return
         }
+        capturePermissionProbeTimer?.invalidate()
+        capturePermissionProbeTimer = nil
 
         let windowID = CGWindowID(overlayWindow?.windowNumber ?? 0)
         Task { @MainActor in
@@ -149,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 真·健康：reset 退避 + 重试计数，菜单栏图标恢复正常
             self.hasReceivedFrameSinceLaunch = true
             self.captureRestartDelay = 1.0
+            self.capturePermissionProbeDelay = 2.0
             self.captureRestartAttempts = 0
             self.updateStatusIcon(captureHealthy: true)
         }
@@ -174,18 +182,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleSilentCaptureRestartIfSafe() {
-        guard hasReceivedFrameSinceLaunch || CGPreflightScreenCaptureAccess() else {
-            NSLog("[快捷高光] 当前身份未通过屏幕录制预检，停止自动重试，避免反复触发系统权限弹窗。")
-            return
+        let action = CaptureRecoveryPolicy.action(
+            hasReceivedFrameSinceLaunch: hasReceivedFrameSinceLaunch,
+            preflightGranted: CGPreflightScreenCaptureAccess(),
+            restartAttempts: captureRestartAttempts,
+            maxRestartAttempts: AppDelegate.maxCaptureRestartAttempts
+        )
+        switch action {
+        case .startCapture:
+            scheduleSilentCaptureRestart()
+        case .probePermission:
+            NSLog("[快捷高光] 当前身份未通过屏幕录制预检，只轮询权限状态，不启动抓帧以避免系统权限弹窗。")
+            scheduleCapturePermissionProbe()
+        case .stop:
+            NSLog("[快捷高光] 抓帧重启已达上限，停止 SCStream 重启；权限探测仍保持静默。")
         }
-        scheduleSilentCaptureRestart()
+    }
+
+    /// 只读轮询 TCC 预检状态：不调用 CGRequestScreenCaptureAccess，不启动 SCStream。
+    /// 这样用户在系统设置里修正当前 /Applications App 的权限后，Zoom 能自动恢复，
+    /// 同时不会再次把用户拖进系统授权弹窗循环。
+    private func scheduleCapturePermissionProbe() {
+        capturePermissionProbeTimer?.invalidate()
+        let delay = capturePermissionProbeDelay
+        capturePermissionProbeDelay = min(capturePermissionProbeDelay * 1.5, 30.0)
+        capturePermissionProbeTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            if CGPreflightScreenCaptureAccess() {
+                NSLog("[快捷高光] 屏幕录制权限预检恢复，自动重连抓帧。")
+                self.capturePermissionProbeDelay = 2.0
+                self.captureRestartAttempts = 0
+                self.captureRestartDelay = 1.0
+                self.startScreenCapture()
+            } else {
+                self.updateStatusIcon(captureHealthy: false)
+                self.scheduleCapturePermissionProbe()
+            }
+        }
     }
 
     /// 用户从菜单栏手动触发重连：清空退避计数 + 立刻重启
     @objc private func manualRetryCapture() {
         captureRestartTimer?.invalidate()
+        capturePermissionProbeTimer?.invalidate()
         captureRestartAttempts = 0
         captureRestartDelay = 1.0
+        capturePermissionProbeDelay = 2.0
         startScreenCapture()
     }
 
@@ -198,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         img?.isTemplate = true
         button.image = img
         button.appearsDisabled = !captureHealthy
-        button.toolTip = captureHealthy ? "快捷高光" : "快捷高光（屏幕抓帧暂时不可用，正在重连…）"
+        button.toolTip = captureHealthy ? "快捷高光" : "快捷高光（未连接屏幕抓帧：请确认 /Applications/快捷高光.app 已获录屏权限）"
     }
 
     // MARK: - Overlay
@@ -242,6 +284,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let retryItem = NSMenuItem(title: "重新尝试连接屏幕抓帧", action: #selector(manualRetryCapture), keyEquivalent: "")
         retryItem.target = self
         menu.addItem(retryItem)
+        let permissionItem = NSMenuItem(title: "打开录屏权限设置…", action: #selector(openScreenRecordingSettings), keyEquivalent: "")
+        permissionItem.target = self
+        menu.addItem(permissionItem)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 快捷高光", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -266,6 +311,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - Hotkey

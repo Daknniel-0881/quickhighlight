@@ -118,6 +118,10 @@ bash build_app.sh
 3. 在系统设置 → 隐私与安全性 → 录屏与系统录音里，移除旧的“快捷高光”条目，再把 `/Applications/快捷高光.app` 加回来并打开。
 4. 只从【应用程序】启动，不要启动桌面副本或仓库 `dist` 副本。
 
+**放大倍率调了，但看起来没放大？**
+
+先看菜单栏图标：如果图标是灰的，说明当前 App 没有拿到屏幕帧。此时不是 Zoom 数学失效，而是放大镜里没有“原材料”可以放大，只能画透明高光圈。快捷高光会静默轮询只读权限状态；你把 `/Applications/快捷高光.app` 加回录屏权限后，它会自动恢复抓帧，不需要重启，也不会反复弹系统授权窗。
+
 ---
 
 ## 🎮 用法
@@ -222,12 +226,10 @@ if SettingsStore.shared.sharpenEnabled, zoom > 1.05 {
 let materialized = sharpenCIContext.createCGImage(processedCI, from: ciCropRect)
 ```
 
-然后绘制路径用经典的 translate + scale 翻 Y，让 `ctx.draw(img, in: 0,0,w,h)` 精确缩放到 lens 几何区域：
+然后绘制时不要再手动翻转，直接让 AppKit 的 `CGContext` 把独立小图拉伸到 lens 几何区域：
 
 ```swift
-ctx.translateBy(x: circleRect.minX, y: circleRect.maxY)
-ctx.scaleBy(x: 1, y: -1)
-ctx.draw(img, in: CGRect(x: 0, y: 0, width: circleRect.width, height: circleRect.height))
+ctx.draw(img, in: circleRect)
 ```
 
 ### 设备级 mask 区分左右修饰键

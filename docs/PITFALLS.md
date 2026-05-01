@@ -271,7 +271,13 @@ RegisterEventHotKey(UInt32(keyCode), UInt32(carbonModifiers), hotKeyID,
 - preflight false 时直接跳过 SCStream，lens 内部透明，只画 donut + ring。
 - 自动重试前再次 preflight；如果当前身份仍未授权，停止重试，避免系统反复弹窗。
 
-### P-903 · 菜单栏 App 必须显式拒绝「最后窗口关闭即退出」
+### P-903 · Zoom 看似不生效时先确认有没有屏幕帧
+**症状**：高光圈能出现，倍率标签也显示 `2.0×`，但圈里没有真实放大画面。
+**根因**：当前 app 身份未通过屏幕录制预检，`latestFrame == nil`。没有屏幕帧时，Zoom 数学没有“原材料”可放大，只能显示透明 lens + donut/ring。
+**正确做法**：preflight false 时启动只读权限轮询，不启动 SCStream；一旦用户在系统设置中给当前 `/Applications/快捷高光.app` 授权，自动重连抓帧，无需重启。
+**反模式**：把这种状态误判成 crop/scale 公式错误，然后继续改 `OverlayView` 的几何数学。
+
+### P-904 · 菜单栏 App 必须显式拒绝「最后窗口关闭即退出」
 **症状**：APP 用着用着自动退出，尤其是关掉设置窗口之后。
 **根因**：macOS 默认 `applicationShouldTerminateAfterLastWindowClosed` 返回 true。菜单栏类型 App 关掉设置窗口（唯一可见 NSWindow）就会触发自杀。
 **正确做法**：
