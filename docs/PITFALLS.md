@@ -10,6 +10,10 @@
 - [§3 坐标系 & DPI](#3-坐标系--dpi)
 - [§4 权限 & 签名](#4-权限--签名)
 - [§5 SwiftUI 绑定](#5-swiftui-绑定)
+- [§6 安装与版本管理](#6-安装与版本管理)
+- [§7 全局热键](#7-全局热键)
+- [§8 验收纪律（防"按下葫芦起了瓢"）](#8-验收纪律防按下葫芦起了瓢)
+- [§9 用户体验铁律（最高优先级 · 不可妥协）](#9-用户体验铁律最高优先级--不可妥协)
 
 ---
 
@@ -163,6 +167,140 @@ xattr -dr com.apple.quarantine "$APP_PATH"
 ### P-402 · `TabView` 的 `tag` 类型必须和 `selection` 完全一致
 **症状**：点击 tab 没反应，或预选 tab 失败。
 **正确做法**：`@State selection: Int` + `.tag(0)` `.tag(1)` `.tag(2)` 全部 Int。如果 selection 是 String 但 tag 给 Int，绑定会失效。
+
+---
+
+---
+
+## §6 安装与版本管理
+
+### P-501 · 不要让机器上同时存在多份不同 cdhash 的 .app
+**症状**：曲率搜索「快捷高光」时 Spotlight 列出多个 `.app`（不同路径、可能不同版本），双击哪个？根本不知道自己测的是不是修过 bug 的那一个，导致**反复说"bug 没修"实际是验错了 binary**。
+**根因**：早期 build_app.sh 把 .app 放在 `dist/` + `/Applications/` + 桌面，但当 app 改名（CursorMagnifier → 快捷高光）或迁移时，旧路径的 .app 没被主动清理，Launch Services 也没反注册，留在文件系统里被 Spotlight 索引。
+**正确做法**：每次 build_app.sh 主动 sweep：
+```bash
+mdfind 'kMDItemFSName == "*快捷高光*"cd || kMDItemFSName == "CursorMagnifier*"cd' \
+    | grep -E '\.app$' | grep -vE "(/Sources/|/.build/|/Resources/|/.git/)"
+```
+对每个匹配项，检查不在 `KEEP_PATHS`（dist/ + /Applications + 桌面）就 `lsregister -u` 反注册 + `rm -rf` 删除。
+**禁止**：build 完只 `cp` 不清理 → 老路径会越堆越多。
+
+### P-502 · App 改名后 Launch Services 注册表会留下旧条目
+**症状**：旧名字的 .app 物理删除后，Launch Services 仍然记得它，Spotlight/Finder 偶尔会闪一下旧名。
+**正确做法**：物理删除前先 `lsregister -u <旧路径>` 反注册。物理删除后再 `lsregister -f <新路径>` 强制刷新。
+
+### P-503 · 多个调试 binary 路径让用户分不清测哪个
+**症状**：曲率不知道用 `/Applications/快捷高光.app` 还是 `.build/release/CursorMagnifier` 还是 `dist/快捷高光.app/Contents/MacOS/CursorMagnifier`。
+**正确做法**：build_app.sh 完成时**只剩下两个**用户可见入口 —— `/Applications/快捷高光.app` + 桌面快捷方式（共享 cdhash），其它都是开发产物（dist/、.build/）。所有给曲率的启动指令必须明确指向 `/Applications/快捷高光.app/Contents/MacOS/CursorMagnifier`，不要用 `dist/` 或 `.build/`。
+
+### P-504 · 没有版本号 / BUILD ID，肉眼无法验证跑的是不是新版
+**症状**：曲率说「修复版本不生效」，实际上跑的是缓存里的老进程或老菜单栏图标，但他没法肉眼区分。
+**正确做法**：在 OverlayView 里 hardcode 一个 `kBuildID` 字符串，每次重 build 改一次。诊断模式（QH_DIAG=1）下把它画在 lens 下方。曲率打开 lens **一眼**就能确认自己跑的是不是当前对话里改的版本。
+
+---
+
+## §7 全局热键
+
+### P-601 · `NSEvent.addGlobalMonitorForEvents` 是被动监听器，被系统级快捷键劫持后到不了
+**症状**：曲率设了 Option+F1 切形状，按下没反应；但**打开设置面板时**有时能切（因为设置内的 ChordHotkeyRecorder 在前台局部监听同样捕获了事件）。
+**根因**：macOS 把 F1/F2/F3/F4 等映射成系统级亮度/键盘亮度等功能键，系统先消费，被动监听拿不到。
+**正确做法**：用 Carbon `RegisterEventHotKey` API（主动注册全局热键）：
+```swift
+import Carbon
+var hotKeyRef: EventHotKeyRef?
+let hotKeyID = EventHotKeyID(signature: OSType(0x51484C54), id: 1)  // 'QHLT'
+RegisterEventHotKey(UInt32(keyCode), UInt32(carbonModifiers), hotKeyID,
+                    GetApplicationEventTarget(), 0, &hotKeyRef)
+```
+能拦截系统已分配的快捷键。**临时绕过**：让用户改用 ⌃⌥S 这种系统未占用的组合。
+
+---
+
+## §8 验收纪律（防"按下葫芦起了瓢"）
+
+### P-701 · 每次发版前必须对照 FEATURES.md 跑一遍验收 SOP
+**症状**：修了 zoom 不生效，但破坏了上下方向；改了上下方向，又破坏了别的功能。
+**根因**：没有强制的回归清单，每次只盯眼前那个 bug，看不到其它功能也被踩坏了。
+**正确做法**：[docs/FEATURES.md](FEATURES.md) 是验收锚点，**每次 commit 前对每条 F-xxx 都过一遍**。任何一条退化为 ❌ 不允许 push。
+
+### P-702 · 不要凭代码逻辑「应该对」就声称修好
+**症状**：代码看上去对，但运行时数据跟代码逻辑不符 —— 反复改反复"修好"反复 bug 复发。
+**正确做法**：可疑场景必须**让数据自己说话**：
+- 加屏幕可见的诊断标签（QH_DIAG=1）
+- 标签里画运行时关键变量：zoom 值、crop 像素尺寸、物化后 CGImage 实际尺寸、绘制目标尺寸
+- 让曲率截图 → 一眼看清「数学是否对、binary 是否新、物化是否成功」
+- **数据 ✓ 才能算修好**，仅代码 review 通过不算
+
+### P-703 · 改任何代码前必须先对照 PITFALLS.md
+**症状**：每次新一轮改动，又重新触碰之前已经记录过的坑。
+**正确做法**：每次准备动 `OverlayView.swift` / `ScreenCapturer.swift` / `HotkeyMonitor.swift` / `build_app.sh` 之前，**强制读一遍** [PITFALLS.md](PITFALLS.md) 索引，看看本次改动是否踩到已知坑域。
+
+### P-704 · 不要在用户验收前自己宣称"修好了"
+**症状**：阿良说「已修复」，实际曲率打开发现还是坏的，信任崩塌。
+**正确做法**：阿良只能说「我改了 X，等曲率验收」，**不能**说「已修复」。验收通过 = 曲率明确说「OK」+ 至少一个回归功能也确认仍正常。
+
+---
+
+## §9 用户体验铁律（最高优先级 · 不可妥协）
+
+> **2026-05-01 曲率震怒后定下的铁律。** 任何代码改动如果违反这一节，无论功能上看着多正确，都必须立刻撤回重做。
+
+### P-901 · 抓帧失败永不阻塞用户使用
+**症状**：屏幕抓帧链路失败时，曾在 lens 圈内填红底白字「✗ 屏幕未抓帧/请去系统设置勾选…」。曲率原话：「贴牛皮癣」「非常傻逼」「一点用户思维都没有」。
+**根因**：开发视角把「让 fail 暴露给用户」当美德，无视用户视角——用户只想用放大镜，不想被错误警告糊脸。
+**正确做法**：
+- 抓帧 nil 时，lens 内部保持透明（露出真实桌面 1× 画面），donut 暗化 + ring 高光照常画。用户依然能用激活键标记鼠标位置。
+- 状态提示只走菜单栏图标轻量切换：`plus.magnifyingglass`（健康）↔ `magnifyingglass`（暂时不可用）+ tooltip。
+- 抓帧链路恢复后自动渲染放大画面，无需用户操作。
+
+**反模式**（永远不要）：
+- ❌ 在 lens 内部画任何错误文字 / 图标 / 红底
+- ❌ 弹 NSAlert 告知「屏幕录制权限失效，请去系统设置…」
+- ❌ 强制把用户引导到系统设置面板
+- ❌ 用红色 / 警告色阻断用户视线
+
+### P-902 · 权限二次失效（cdhash 漂移）不再二次打扰
+**症状**：用户已经手动勾选屏幕录制权限，但 ad-hoc 重签后每次启动都被反复提示「需要授权屏幕录制」。
+**根因**：ad-hoc 签名 cdhash 每次 build 都变，TCC 数据库里旧 cdhash 的授权对新 cdhash 无效，`CGPreflightScreenCaptureAccess()` 返回 false。代码盲目按 preflight 结果决定弹窗 → 反复打扰。
+**正确做法**：
+- 一次成功授权后写入 `kPermGrantedOnce = true`，永久消音（即使 preflight 后续返回 false）。
+- 启动时绝不调用 `CGRequestScreenCaptureAccess()` —— 这函数本身会触发系统弹框。只用只读的 `CGPreflightScreenCaptureAccess()` 检测。
+- 真正首启才弹一次告知；之后无论 cdhash 如何漂移，永久静默。
+
+### P-903 · 菜单栏 App 必须显式拒绝「最后窗口关闭即退出」
+**症状**：APP 用着用着自动退出，尤其是关掉设置窗口之后。
+**根因**：macOS 默认 `applicationShouldTerminateAfterLastWindowClosed` 返回 true。菜单栏类型 App 关掉设置窗口（唯一可见 NSWindow）就会触发自杀。
+**正确做法**：
+```swift
+func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    return false
+}
+```
+
+### P-904 · SCStream 异常停止必须静默自愈
+**症状**：APP 用一段时间后放大镜失灵，但进程没退出。
+**根因**：`SCStreamDelegate.stream(_:didStopWithError:)` 留空，TCC 抖动 / 屏幕拓扑变化 / 系统 idle 等触发系统级 stop 后，stream 实例就废了，再也不恢复。
+**正确做法**：
+- `didStopWithError` 必须清理状态 + 通知调度层。
+- 调度层（AppDelegate）做指数退避静默重启：1s → 2s → 4s → … 30s 封顶。
+- 整个过程不弹窗、不通知中心打扰，只 NSLog + 菜单栏图标轻提示。
+
+### P-905 · 默认状态下不展示任何调试 UI
+**症状**：发布版用户在 lens 下方看到一堆 `BUILD vN-xxx / zoom=N× / crop=N×N px` 调试文字。
+**根因**：开发期为方便排错把诊断模式默认开启，发布前忘记切回。
+**正确做法**：
+- 诊断 / 调试类 UI 默认 OFF。开发期通过环境变量 opt-in（`QH_DIAG=1`）。
+- 任何「让我看到内部状态」的 UI 元素都得问一句：用户在终端产品里看到这个会爽吗？
+
+### 灵魂检查（每次合 PR 前过一遍）
+- [ ] 失败状态有没有阻塞用户使用？
+- [ ] 有没有任何弹窗在告诉用户「你需要去做什么」？（除非真的是首次授权引导）
+- [ ] 用户已经授权过的权限会不会被二次打扰？
+- [ ] APP 用得久了会不会自己退出？
+- [ ] 异常状态会不会自愈？还是要用户重启 APP 才好？
+- [ ] 有没有任何调试文字 / 红色色块 / 警告图标默认开启？
+
+> **任何一项不过，回去改完再来。这一节比 §1~§8 任何一条都更优先。**
 
 ---
 

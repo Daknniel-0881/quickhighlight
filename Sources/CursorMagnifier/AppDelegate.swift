@@ -20,11 +20,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyMonitor = HotkeyMonitor()
     private var cancellables: Set<AnyCancellable> = []
 
+    /// 抓帧静默重启状态（指数退避：1s → 2s → 4s → ... 30s 封顶 · 最多 5 次后停手）
+    /// 用户体验铁律：抓帧失败永远不弹窗，后台默默重试，菜单栏图标做轻状态提示
+    /// 5 次仍失败大概率是权限/cdhash 问题，再重试也只会反复触发系统级权限弹框
+    private var captureRestartDelay: TimeInterval = 1.0
+    private var captureRestartTimer: Timer?
+    private var captureRestartAttempts = 0
+    private static let maxCaptureRestartAttempts = 5
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupOverlayWindow()
         setupStatusItem()
         setupHotkey()
         observeSettings()
+        // SCStream 系统级停止时静默重启，绝不弹窗
+        ScreenCapturer.shared.onStreamStopped = { [weak self] _ in
+            self?.updateStatusIcon(captureHealthy: false)
+            self?.scheduleSilentCaptureRestart()
+        }
         // 权限引导放到 UI 起来之后弹，避免被启动闪屏盖掉
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.ensurePermissions()
@@ -90,20 +103,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         hotkeyMonitor.stop()
         stopTimer()
+        captureRestartTimer?.invalidate()
+        captureRestartTimer = nil
         Task { await ScreenCapturer.shared.stop() }
     }
 
-    /// 应用启动后即启动屏幕抓帧（持续运行），按热键时直接拿最新帧 — 避免按键时再启动 stream 的延迟
+    /// 修复「APP 用着用着自动退出」的根因：
+    /// macOS 默认行为是「最后一个窗口关闭 → terminate」。本 APP 是菜单栏常驻类型，
+    /// 关掉设置面板不应该退出。必须显式返回 false，否则用户每关一次设置窗口就退出一次。
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
+
+    /// 应用启动后即启动屏幕抓帧（持续运行），按热键时直接拿最新帧。
+    /// 用户体验铁律：失败永远不弹窗，只 NSLog + 菜单栏图标轻提示 + 后台静默指数退避重启。
+    /// CGPreflight 在 ad-hoc 重签 cdhash 漂移时会假阴性，所以不预检——直接让 SCStream 试，
+    /// 真正不行了再静默重试，绝不打扰用户。
     private func startScreenCapture() {
-        guard CGPreflightScreenCaptureAccess() else { return }
         let windowID = CGWindowID(overlayWindow?.windowNumber ?? 0)
         Task { @MainActor in
             do {
                 try await ScreenCapturer.shared.start(excludingWindowIDs: [windowID])
             } catch {
-                NSLog("[快捷高光] ScreenCapturer.start 失败: \(error.localizedDescription)")
+                NSLog("[快捷高光] ScreenCapturer.start 失败: \(error.localizedDescription) — 静默重启中")
+                self.updateStatusIcon(captureHealthy: false)
+                self.scheduleSilentCaptureRestart()
+                return
             }
+            // start() 成功 ≠ 真有 frame；2s 后仍无 latestFrame 当作启动失败，静默重启
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if ScreenCapturer.shared.latestFrame == nil {
+                NSLog("[快捷高光] SCStream 启动后 2s 无帧 — 静默重启")
+                await ScreenCapturer.shared.stop()
+                self.updateStatusIcon(captureHealthy: false)
+                self.scheduleSilentCaptureRestart()
+                return
+            }
+            // 真·健康：reset 退避 + 重试计数，菜单栏图标恢复正常
+            self.captureRestartDelay = 1.0
+            self.captureRestartAttempts = 0
+            self.updateStatusIcon(captureHealthy: true)
         }
+    }
+
+    /// 静默重启抓帧。退避 1s → 2s → 4s ... 30s 封顶。
+    /// 累计 5 次仍失败就停手 —— 大概率是权限/cdhash 问题，继续重试只会
+    /// 反复触发系统级"想录制屏幕"弹框，把用户拖进死循环。
+    /// 用户可以从菜单栏点"重新尝试连接屏幕抓帧"手动恢复。
+    private func scheduleSilentCaptureRestart() {
+        captureRestartTimer?.invalidate()
+        if captureRestartAttempts >= AppDelegate.maxCaptureRestartAttempts {
+            NSLog("[快捷高光] 抓帧重启已达 %d 次上限，停止自动重试。用户可从菜单栏手动恢复。",
+                  AppDelegate.maxCaptureRestartAttempts)
+            return
+        }
+        captureRestartAttempts += 1
+        let delay = captureRestartDelay
+        captureRestartDelay = min(captureRestartDelay * 2.0, 30.0)
+        captureRestartTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            self?.startScreenCapture()
+        }
+    }
+
+    /// 用户从菜单栏手动触发重连：清空退避计数 + 立刻重启
+    @objc private func manualRetryCapture() {
+        captureRestartTimer?.invalidate()
+        captureRestartAttempts = 0
+        captureRestartDelay = 1.0
+        startScreenCapture()
+    }
+
+    /// 菜单栏图标轻量状态提示：抓帧健康 = plus.magnifyingglass，失败 = magnifyingglass（无加号）
+    /// 用户瞥一眼就知道当前能不能放大；不健康时也不弹窗、不阻断使用。
+    private func updateStatusIcon(captureHealthy: Bool) {
+        guard let button = statusItem?.button else { return }
+        let symbolName = captureHealthy ? "plus.magnifyingglass" : "magnifyingglass"
+        let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: "快捷高光")
+        img?.isTemplate = true
+        button.image = img
+        button.appearsDisabled = !captureHealthy
+        button.toolTip = captureHealthy ? "快捷高光" : "快捷高光（屏幕抓帧暂时不可用，正在重连…）"
     }
 
     // MARK: - Overlay
@@ -144,6 +223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let prefItem = NSMenuItem(title: "偏好设置…", action: #selector(openSettings), keyEquivalent: ",")
         prefItem.target = self
         menu.addItem(prefItem)
+        let retryItem = NSMenuItem(title: "重新尝试连接屏幕抓帧", action: #selector(manualRetryCapture), keyEquivalent: "")
+        retryItem.target = self
+        menu.addItem(retryItem)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 快捷高光", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -194,6 +276,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.hotkeyMonitor.resetState()
                 self?.deactivate()
             }
+            .store(in: &cancellables)
+
+        // 切换形状的组合键改了 → 立即 unregister 旧 Carbon 热键 + register 新的
+        // 这就是曲率要的「设置快捷键时能写入系统、监听修改、修改系统快捷键设置」机制：
+        // resetState() 内部 unregisterChord() + registerChordIfConfigured()，
+        // Carbon RegisterEventHotKey 是系统级注册，跟 Spotlight 一个层级，
+        // 注册后 macOS 会优先把事件派给我们 —— 跟系统快捷键冲突时本 App 优先生效
+        SettingsStore.shared.$toggleShapeKeyCode
+            .dropFirst()
+            .sink { [weak self] _ in self?.hotkeyMonitor.resetState() }
+            .store(in: &cancellables)
+        SettingsStore.shared.$toggleShapeModifiers
+            .dropFirst()
+            .sink { [weak self] _ in self?.hotkeyMonitor.resetState() }
             .store(in: &cancellables)
 
         // 调整外观参数时立即刷新视图（每个 publisher 独立订阅，subscribe 时初始值用 dropFirst(1) 跳掉）
@@ -263,42 +359,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 显式检测屏幕录制 + 辅助功能两项关键权限。
-    /// 加了「曾经全部授权过」缓存：一次授权成功后不再弹我们自己的对话框，
-    /// 即使 ad-hoc 重签名导致 TCC 暂时失效也保持安静，让用户不被反复打扰。
+    /// 权限引导：仅在「全新设备 + 没用过本 App」时弹一次自定义引导对话框。
+    ///
+    /// 死循环根因（v8 之前）：
+    /// 1) ad-hoc 签名每次 build cdhash 变化，TCC 数据库认旧 cdhash 不认新的
+    /// 2) `CGPreflightScreenCaptureAccess()` 因此**永远返回 false**
+    /// 3) 旧逻辑用 `axTrusted && scOk` 作为「曾经授权」判定 → 永远不成立 → kPermGrantedOnce 永远不写
+    /// 4) 主动调 `CGRequestScreenCaptureAccess()` → 系统每次启动都弹「想录制屏幕」对话框
+    /// 5) 用户去系统设置勾选 → 重启 → cdhash 再变 → 又弹 → **死循环**
+    ///
+    /// 修复策略（v8）：
+    /// - 「弹过自定义引导」就标记 kPermPromptShownAt，**之后永远不再弹任何 App 自己的引导**
+    /// - **永远不主动调 CGRequestScreenCaptureAccess**——首次 SCStream.startCapture 会自然触发一次系统弹框，
+    ///   交给系统决定，App 不重复请求
+    /// - 不依赖 preflight 结果做循环判定，因为 ad-hoc 下它根本不可信
     private func ensurePermissions() {
         let defaults = UserDefaults.standard
         let kPermPromptShownAt = "permPromptDismissedAt"
-        let kPermGrantedOnce = "permGrantedOnce"
 
-        // 1) 辅助功能 — 不带 prompt:true 调用，避免每次启动都触发系统辅助功能弹框
+        // 任何时候只要弹过一次自定义引导，永久不再弹（无视 preflight 结果）
+        // 这一行是切断死循环的关键
+        if defaults.double(forKey: kPermPromptShownAt) > 0 {
+            return
+        }
+
+        // 真·首次（这台设备从未运行过本 App）：弹一次告知去开权限
+        // ⚠️ 不调用 CGRequestScreenCaptureAccess —— 让 SCStream.startCapture 那条路径
+        //    去自然触发系统级弹框，避免双重请求
         let axTrusted = AXIsProcessTrustedWithOptions(nil)
-
-        // 2) 屏幕录制 — Preflight 是只读检测，安全
         let scOk = CGPreflightScreenCaptureAccess()
-
-        // 都通过：标记「曾经成功授权过」，永久消音
         if axTrusted && scOk {
-            defaults.set(true, forKey: kPermGrantedOnce)
+            // 极少数情况：用户从其他 App 打开过相同 cdhash（比如签名稳定的版本），
+            // 此时无需弹引导，直接静默 + 标记
+            defaults.set(Date().timeIntervalSince1970, forKey: kPermPromptShownAt)
             return
         }
 
-        // 曾经全部授权过：永久静默。即使现在某项 false（ad-hoc 重签 cdhash 变化导致的临时
-        // 失效），也不再弹任何我们或系统的对话框。用户授权过一次就一辈子不再被打扰。
-        // ⚠️ 关键：不调用 CGRequestScreenCaptureAccess() —— 这个函数本身会触发系统弹框。
-        if defaults.bool(forKey: kPermGrantedOnce) {
-            return
-        }
-
-        // 之前弹过一次（任何时间）：永久不再弹。曲率明确要求"开过就不再问"，
-        // 优于按 24h 周期重弹。
-        let lastShown = defaults.double(forKey: kPermPromptShownAt)
-        if lastShown > 0 {
-            return
-        }
-
-        // 真·首次：弹一次告知用户去开权限。这次会触发系统弹框（CGRequestScreenCaptureAccess）
-        if !scOk { _ = CGRequestScreenCaptureAccess() }
         let alert = NSAlert()
         alert.messageText = "快捷高光 首次启动需要授权两项系统权限"
         var lines: [String] = []
@@ -313,7 +409,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "去开启屏幕录制")
         alert.addButton(withTitle: "去开启辅助功能")
         alert.addButton(withTitle: "稍后")
+        // 关键：弹之前就先写标志，无论用户点哪个按钮、是否真去授权，下次启动都不再打扰
         defaults.set(Date().timeIntervalSince1970, forKey: kPermPromptShownAt)
+        defaults.synchronize()
         let resp = alert.runModal()
         switch resp {
         case .alertFirstButtonReturn:

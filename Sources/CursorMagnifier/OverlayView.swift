@@ -10,6 +10,14 @@ private let sharpenCIContext: CIContext = {
     ])
 }()
 
+/// 编译时 BUILD ID — 每次重 build 改一次，肉眼验证「跑的是不是新 binary」
+/// 诊断模式下会画在 lens 下方
+private let kBuildID = "v8-2026-05-01-ux"
+
+/// 诊断模式开关 — 默认 OFF。开发期需要肉眼诊断时用 QH_DIAG=1 启动。
+/// 用户体验铁律：默认状态下 lens 周边不允许出现任何调试文字/数字。
+private let kDiagMode = ProcessInfo.processInfo.environment["QH_DIAG"] == "1"
+
 final class OverlayView: NSView {
     /// 鼠标在 view 内的坐标（左下原点，与 isFlipped=false 一致）
     private var cursorPos: NSPoint = .zero
@@ -17,6 +25,18 @@ final class OverlayView: NSView {
     /// 缩放场景下不会按 size 真正缩放（NSImage 用源 CGImage 像素尺寸而忽略 size 参数），
     /// 这是「放大倍率不生效」的根因。改用 ctx.draw(cgImage:in:) 由 CGContext 自己缩放。
     private var capturedCGImage: CGImage?
+
+    /// 诊断模式快照：最近一次 updateForCursor() 算出的关键数据
+    /// 这些数据画在 lens 下方，肉眼验证「数学是不是对的、binary 是不是新的」
+    private struct DiagSnapshot {
+        var frameSize: CGSize = .zero
+        var pointSize: CGSize = .zero
+        var zoom: CGFloat = 0
+        var innerSize: CGSize = .zero
+        var cropPxSize: CGSize = .zero
+        var capturedSize: CGSize = .zero  // 物化后实际像素尺寸
+    }
+    private var diag = DiagSnapshot()
 
     private var radius: CGFloat { CGFloat(SettingsStore.shared.radius) }
     private var rectWidth: CGFloat { CGFloat(SettingsStore.shared.rectWidth) }
@@ -164,6 +184,18 @@ final class OverlayView: NSView {
             return
         }
         capturedCGImage = materialized
+
+        if kDiagMode {
+            diag = DiagSnapshot(
+                frameSize: CGSize(width: frame.width, height: frame.height),
+                pointSize: pointSize,
+                zoom: z,
+                innerSize: inner,
+                cropPxSize: cropRect.size,
+                capturedSize: CGSize(width: materialized.width, height: materialized.height)
+            )
+        }
+
         needsDisplay = true
     }
 
@@ -207,6 +239,10 @@ final class OverlayView: NSView {
             ctx.draw(img, in: circleRect)
             ctx.restoreGState()
         }
+        // 用户体验铁律：抓帧失败时绝不在 lens 内画红字/警告/弹窗。
+        // lens 内部保持透明（露出真实桌面 1× 画面）+ donut 暗化 + ring 高光，
+        // 用户依然能用激活键标记鼠标位置。抓帧链路恢复后会自动显示放大画面。
+        // 状态提示只通过菜单栏图标做轻量呈现（plus.magnifyingglass ↔ magnifyingglass）。
 
         // 3) 白色高光边框
         if showRing {
@@ -222,7 +258,7 @@ final class OverlayView: NSView {
         }
 
         // 4) 当前放大倍率小标签（用户验证 zoom 是否生效）
-        if SettingsStore.shared.showZoomLabel {
+        if SettingsStore.shared.showZoomLabel && !kDiagMode {
             let label = String(format: "%.1f×", zoom)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
@@ -237,6 +273,50 @@ final class OverlayView: NSView {
                 y: circleRect.minY - strSize.height - 6
             )
             str.draw(at: labelOrigin)
+        }
+
+        // 5) 诊断模式：lens 下方画完整诊断标签（QH_DIAG=1 启动）
+        //    这个标签让肉眼直接验证：跑的是不是新 binary、zoom 数学对不对、物化是否成功
+        if kDiagMode {
+            // 物化尺寸 vs lens 几何尺寸的视觉放大倍率
+            let visualZoomX = diag.capturedSize.width > 0
+                ? circleRect.width / diag.capturedSize.width : 0
+            let verdict: String = {
+                if diag.capturedSize == .zero { return "✗ 抓帧失败" }
+                let expectedSrcW = diag.innerSize.width / max(diag.zoom, 0.01)
+                if abs(diag.cropPxSize.width - expectedSrcW) > expectedSrcW * 0.2 {
+                    return "✗ crop 尺寸异常"
+                }
+                if abs(visualZoomX - diag.zoom) > 0.5 {
+                    return "✗ 视觉倍率 ≠ zoom"
+                }
+                return "✓ 放大正常"
+            }()
+            let lines = [
+                "BUILD \(kBuildID)",
+                String(format: "zoom=%.1f×  inner=%.0f×%.0f pt", diag.zoom,
+                       diag.innerSize.width, diag.innerSize.height),
+                String(format: "crop=%.0f×%.0f px  src=%d×%d px",
+                       diag.cropPxSize.width, diag.cropPxSize.height,
+                       Int(diag.capturedSize.width), Int(diag.capturedSize.height)),
+                String(format: "dst=%.0f×%.0f pt  视觉≈%.1f×",
+                       circleRect.width, circleRect.height, visualZoomX),
+                verdict
+            ]
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.white,
+                .strokeColor: NSColor.black.withAlphaComponent(0.9),
+                .strokeWidth: -3.5
+            ]
+            var y = circleRect.minY - 14
+            for line in lines {
+                let str = NSAttributedString(string: line, attributes: attrs)
+                let w = str.size().width
+                let origin = NSPoint(x: cursorPos.x - w / 2, y: y)
+                str.draw(at: origin)
+                y -= 14
+            }
         }
     }
 }

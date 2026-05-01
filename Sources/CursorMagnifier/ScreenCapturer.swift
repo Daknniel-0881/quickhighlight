@@ -21,6 +21,10 @@ final class ScreenCapturer: NSObject {
     /// 主屏点尺寸（NSScreen.frame）
     private(set) var displayPointSize: CGSize = .zero
 
+    /// SCStream 意外停止时的回调（系统 stop / 错误）。
+    /// AppDelegate 用来调度静默重启 + 切换菜单栏图标，不打扰用户。
+    var onStreamStopped: ((Error?) -> Void)?
+
     /// 启动 stream。excludingWindowIDs 用于排除 overlay 自身（不然会拍到自己造成无限放大）。
     func start(excludingWindowIDs: [CGWindowID]) async throws {
         if stream != nil { return }
@@ -85,7 +89,16 @@ final class ScreenCapturer: NSObject {
 
 extension ScreenCapturer: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
-        // 留空 — 调用方按需处理
+        // SCStream 系统级停止：常见原因包括 TCC 权限抖动、屏幕拓扑变化、系统 idle。
+        // 之前留空 → 一旦 stream 挂了就再也不恢复，用户体感是「APP 用着用着就废了」。
+        // 现在主动清理状态 + 通知 AppDelegate 触发静默重启（指数退避，不打扰用户）。
+        let nsErr = error as NSError
+        NSLog("[快捷高光] SCStream stopped: %@ (code=%d)", nsErr.localizedDescription, nsErr.code)
+        Task { @MainActor in
+            ScreenCapturer.shared.stream = nil
+            ScreenCapturer.shared.latestFrame = nil
+            ScreenCapturer.shared.onStreamStopped?(error)
+        }
     }
 }
 
