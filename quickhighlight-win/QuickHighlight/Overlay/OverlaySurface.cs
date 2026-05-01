@@ -9,6 +9,7 @@ using Windows.Graphics.Imaging;
 using MediaBrushes = System.Windows.Media.Brushes;
 using MediaColor = System.Windows.Media.Color;
 using MediaPen = System.Windows.Media.Pen;
+using WinForms = System.Windows.Forms;
 using WpfSize = System.Windows.Size;
 
 namespace QuickHighlight.Overlay;
@@ -18,6 +19,8 @@ public sealed class OverlaySurface : FrameworkElement
     private SettingsStore? _settings;
     private ScreenCapturer? _capturer;
     private System.Windows.Point _cursor;
+    private System.Drawing.Point _cursorScreenPixel;
+    private bool _cursorOnPrimaryScreen = true;
 
     public void Configure(SettingsStore settings, ScreenCapturer capturer)
     {
@@ -30,7 +33,13 @@ public sealed class OverlaySurface : FrameworkElement
         if (GetCursorPos(out var point))
         {
             var dpi = VisualTreeHelper.GetDpi(this);
-            _cursor = new System.Windows.Point(point.X / dpi.DpiScaleX, point.Y / dpi.DpiScaleY);
+            var primaryBounds = WinForms.Screen.PrimaryScreen?.Bounds
+                ?? new System.Drawing.Rectangle(0, 0, 1920, 1080);
+            _cursorScreenPixel = new System.Drawing.Point(point.X, point.Y);
+            _cursorOnPrimaryScreen = primaryBounds.Contains(_cursorScreenPixel);
+            _cursor = new System.Windows.Point(
+                (point.X - primaryBounds.Left) / dpi.DpiScaleX,
+                (point.Y - primaryBounds.Top) / dpi.DpiScaleY);
         }
         InvalidateVisual();
     }
@@ -89,7 +98,7 @@ public sealed class OverlaySurface : FrameworkElement
         ScreenCapturer capturer)
     {
         using var frame = capturer.LatestFrame;
-        if (frame is null)
+        if (frame is null || !_cursorOnPrimaryScreen)
         {
             return;
         }
@@ -99,13 +108,15 @@ public sealed class OverlaySurface : FrameworkElement
             using var converted = SoftwareBitmap.Convert(frame, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
             var source = ToBitmapSource(converted);
             var dpi = VisualTreeHelper.GetDpi(this);
-            var scaleX = source.PixelWidth / Math.Max(ActualWidth * dpi.DpiScaleX, 1);
-            var scaleY = source.PixelHeight / Math.Max(ActualHeight * dpi.DpiScaleY, 1);
+            var primaryBounds = WinForms.Screen.PrimaryScreen?.Bounds
+                ?? new System.Drawing.Rectangle(0, 0, source.PixelWidth, source.PixelHeight);
+            var scaleX = source.PixelWidth / Math.Max((double)primaryBounds.Width, 1);
+            var scaleY = source.PixelHeight / Math.Max((double)primaryBounds.Height, 1);
 
-            var cropWidthPx = Math.Max(1, (int)Math.Round((lens.Width / settings.Zoom) * scaleX));
-            var cropHeightPx = Math.Max(1, (int)Math.Round((lens.Height / settings.Zoom) * scaleY));
-            var cursorPxX = (int)Math.Round(_cursor.X * dpi.DpiScaleX * scaleX);
-            var cursorPxY = (int)Math.Round(_cursor.Y * dpi.DpiScaleY * scaleY);
+            var cropWidthPx = Math.Max(1, (int)Math.Round((lens.Width * dpi.DpiScaleX / settings.Zoom) * scaleX));
+            var cropHeightPx = Math.Max(1, (int)Math.Round((lens.Height * dpi.DpiScaleY / settings.Zoom) * scaleY));
+            var cursorPxX = (int)Math.Round((_cursorScreenPixel.X - primaryBounds.Left) * scaleX);
+            var cursorPxY = (int)Math.Round((_cursorScreenPixel.Y - primaryBounds.Top) * scaleY);
             var cropX = Math.Clamp(cursorPxX - cropWidthPx / 2, 0, Math.Max(0, source.PixelWidth - cropWidthPx));
             var cropY = Math.Clamp(cursorPxY - cropHeightPx / 2, 0, Math.Max(0, source.PixelHeight - cropHeightPx));
             cropWidthPx = Math.Min(cropWidthPx, source.PixelWidth - cropX);

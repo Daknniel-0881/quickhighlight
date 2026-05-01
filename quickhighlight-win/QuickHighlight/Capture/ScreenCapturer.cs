@@ -16,6 +16,8 @@ namespace QuickHighlight.Capture;
 public sealed class ScreenCapturer : IDisposable
 {
     private const int MonitorDefaultToPrimary = 1;
+    private const int MaxRestartAttempts = 5;
+    private const int FirstFrameTimeoutMs = 2000;
     private readonly object _frameLock = new();
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
@@ -29,7 +31,12 @@ public sealed class ScreenCapturer : IDisposable
     private int _processingFrame;
     private int _restartAttempts;
     private int _restartDelayMs = 1000;
+    private int _availabilityProbeDelayMs = 2000;
     private bool _stopping;
+    private bool _captureHealthy;
+    private bool _hasReceivedFrameSinceStart;
+    private CancellationTokenSource? _firstFrameCheckCts;
+    private CancellationTokenSource? _availabilityProbeCts;
 
     public event Action<bool>? CaptureHealthChanged;
 
@@ -51,13 +58,15 @@ public sealed class ScreenCapturer : IDisposable
         {
             if (_session is not null || _stopping) return;
             StartCore();
-            CaptureHealthChanged?.Invoke(true);
+            SetCaptureHealth(false);
+            ScheduleFirstFrameCheck();
             _restartAttempts = 0;
             _restartDelayMs = 1000;
         }
         catch
         {
-            CaptureHealthChanged?.Invoke(false);
+            StopCore(clearFrame: true);
+            SetCaptureHealth(false);
             _ = ScheduleRestartAsync();
         }
         finally
@@ -72,6 +81,7 @@ public sealed class ScreenCapturer : IDisposable
         try
         {
             _stopping = true;
+            CancelPendingChecks();
             StopCore(clearFrame: true);
         }
         finally
@@ -87,14 +97,19 @@ public sealed class ScreenCapturer : IDisposable
         {
             _restartAttempts = 0;
             _restartDelayMs = 1000;
+            _availabilityProbeDelayMs = 2000;
+            _hasReceivedFrameSinceStart = false;
+            CancelPendingChecks();
             StopCore(clearFrame: true);
             _stopping = false;
             StartCore();
-            CaptureHealthChanged?.Invoke(true);
+            SetCaptureHealth(false);
+            ScheduleFirstFrameCheck();
         }
         catch
         {
-            CaptureHealthChanged?.Invoke(false);
+            StopCore(clearFrame: true);
+            SetCaptureHealth(false);
             _ = ScheduleRestartAsync();
         }
         finally
@@ -135,6 +150,7 @@ public sealed class ScreenCapturer : IDisposable
         _session = _framePool.CreateCaptureSession(_item);
         TryDisableCursorCapture(_session);
         _session.StartCapture();
+        _hasReceivedFrameSinceStart = false;
     }
 
     private void StopCore(bool clearFrame)
@@ -160,6 +176,7 @@ public sealed class ScreenCapturer : IDisposable
 
         if (clearFrame)
         {
+            _hasReceivedFrameSinceStart = false;
             lock (_frameLock)
             {
                 _latestFrame?.Dispose();
@@ -193,11 +210,17 @@ public sealed class ScreenCapturer : IDisposable
                 _latestFrame?.Dispose();
                 _latestFrame = converted;
             }
-            CaptureHealthChanged?.Invoke(true);
+            _hasReceivedFrameSinceStart = true;
+            _restartAttempts = 0;
+            _restartDelayMs = 1000;
+            _availabilityProbeDelayMs = 2000;
+            CancelFirstFrameCheck();
+            CancelAvailabilityProbe();
+            SetCaptureHealth(true);
         }
         catch
         {
-            CaptureHealthChanged?.Invoke(false);
+            SetCaptureHealth(false);
             _ = ScheduleRestartAsync();
         }
         finally
@@ -208,13 +231,31 @@ public sealed class ScreenCapturer : IDisposable
 
     private void OnCaptureItemClosed(GraphicsCaptureItem sender, object args)
     {
-        CaptureHealthChanged?.Invoke(false);
+        SetCaptureHealth(false);
         _ = ScheduleRestartAsync();
     }
 
     private async Task ScheduleRestartAsync()
     {
-        if (_stopping || _restartAttempts >= 5) return;
+        if (_stopping) return;
+
+        var action = CaptureRecoveryPolicy.Decide(
+            GraphicsCaptureSession.IsSupported(),
+            _hasReceivedFrameSinceStart,
+            _restartAttempts,
+            MaxRestartAttempts);
+        if (action == CaptureRecoveryAction.ProbeAvailability)
+        {
+            SetCaptureHealth(false);
+            _ = ScheduleAvailabilityProbeAsync();
+            return;
+        }
+        if (action == CaptureRecoveryAction.Stop)
+        {
+            SetCaptureHealth(false);
+            return;
+        }
+
         var delay = _restartDelayMs;
         _restartAttempts++;
         _restartDelayMs = Math.Min(_restartDelayMs * 2, 30_000);
@@ -226,19 +267,141 @@ public sealed class ScreenCapturer : IDisposable
         {
             StopCore(clearFrame: true);
             StartCore();
-            CaptureHealthChanged?.Invoke(true);
-            _restartAttempts = 0;
-            _restartDelayMs = 1000;
+            SetCaptureHealth(false);
+            ScheduleFirstFrameCheck();
         }
         catch
         {
-            CaptureHealthChanged?.Invoke(false);
+            StopCore(clearFrame: true);
+            SetCaptureHealth(false);
             _ = ScheduleRestartAsync();
         }
         finally
         {
             _lifecycleLock.Release();
         }
+    }
+
+    private void ScheduleFirstFrameCheck()
+    {
+        CancelFirstFrameCheck();
+        var cts = new CancellationTokenSource();
+        _firstFrameCheckCts = cts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(FirstFrameTimeoutMs, cts.Token);
+                if (cts.IsCancellationRequested || _stopping || _hasReceivedFrameSinceStart) return;
+
+                await _lifecycleLock.WaitAsync(cts.Token);
+                try
+                {
+                    if (!_stopping && !_hasReceivedFrameSinceStart && _session is not null)
+                    {
+                        StopCore(clearFrame: true);
+                        SetCaptureHealth(false);
+                    }
+                }
+                finally
+                {
+                    _lifecycleLock.Release();
+                }
+
+                if (!_stopping && !_hasReceivedFrameSinceStart)
+                {
+                    await ScheduleRestartAsync();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal cancellation when the first frame arrives or capture stops.
+            }
+        });
+    }
+
+    private Task ScheduleAvailabilityProbeAsync()
+    {
+        if (_stopping || _availabilityProbeCts is not null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var cts = new CancellationTokenSource();
+        _availabilityProbeCts = cts;
+        return Task.Run(async () =>
+        {
+            try
+            {
+                while (!_stopping && !cts.IsCancellationRequested)
+                {
+                    var delay = _availabilityProbeDelayMs;
+                    _availabilityProbeDelayMs = Math.Min((int)(_availabilityProbeDelayMs * 1.5), 30_000);
+                    await Task.Delay(delay, cts.Token);
+                    if (_stopping || cts.IsCancellationRequested) return;
+                    if (!GraphicsCaptureSession.IsSupported()) continue;
+
+                    await _lifecycleLock.WaitAsync(cts.Token);
+                    try
+                    {
+                        if (_stopping || _session is not null) return;
+                        _restartAttempts = 0;
+                        _restartDelayMs = 1000;
+                        _availabilityProbeDelayMs = 2000;
+                        StartCore();
+                        SetCaptureHealth(false);
+                        ScheduleFirstFrameCheck();
+                        return;
+                    }
+                    catch
+                    {
+                        StopCore(clearFrame: true);
+                        SetCaptureHealth(false);
+                    }
+                    finally
+                    {
+                        _lifecycleLock.Release();
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal cancellation when capture becomes healthy or the app exits.
+            }
+            finally
+            {
+                if (ReferenceEquals(_availabilityProbeCts, cts))
+                {
+                    _availabilityProbeCts.Dispose();
+                    _availabilityProbeCts = null;
+                }
+            }
+        });
+    }
+
+    private void SetCaptureHealth(bool healthy)
+    {
+        if (_captureHealthy == healthy) return;
+        _captureHealthy = healthy;
+        CaptureHealthChanged?.Invoke(healthy);
+    }
+
+    private void CancelPendingChecks()
+    {
+        CancelFirstFrameCheck();
+        CancelAvailabilityProbe();
+    }
+
+    private void CancelFirstFrameCheck()
+    {
+        _firstFrameCheckCts?.Cancel();
+        _firstFrameCheckCts = null;
+    }
+
+    private void CancelAvailabilityProbe()
+    {
+        _availabilityProbeCts?.Cancel();
+        _availabilityProbeCts = null;
     }
 
     private static GraphicsCaptureItem CreateItemForMonitor(nint monitor)
@@ -270,6 +433,7 @@ public sealed class ScreenCapturer : IDisposable
     public void Dispose()
     {
         _stopping = true;
+        CancelPendingChecks();
         StopCore(clearFrame: true);
         _lifecycleLock.Dispose();
     }

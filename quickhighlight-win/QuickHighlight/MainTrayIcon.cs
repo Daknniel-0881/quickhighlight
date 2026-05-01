@@ -35,7 +35,7 @@ public sealed class MainTrayIcon : IDisposable
         _notifyIcon.ContextMenuStrip.Items.Add("退出 快捷高光", null, (_, _) => quit());
         _notifyIcon.DoubleClick += (_, _) => openSettings();
 
-        SetCaptureHealthy(true);
+        SetCaptureHealthy(false);
     }
 
     public void SetCaptureHealthy(bool healthy)
@@ -43,7 +43,7 @@ public sealed class MainTrayIcon : IDisposable
         _notifyIcon.Icon = healthy ? SystemIcons.Information : SystemIcons.Warning;
         _notifyIcon.Text = healthy
             ? "快捷高光"
-            : "快捷高光（屏幕抓帧暂时不可用，正在静默重连）";
+            : "快捷高光（未连接屏幕抓帧，正在静默等待恢复）";
     }
 
     public void Dispose()

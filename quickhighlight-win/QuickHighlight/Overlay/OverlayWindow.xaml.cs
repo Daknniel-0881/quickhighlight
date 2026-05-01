@@ -26,8 +26,8 @@ public partial class OverlayWindow : Window
         var bounds = Screen.PrimaryScreen?.Bounds ?? new System.Drawing.Rectangle(0, 0, 1920, 1080);
         Left = bounds.Left;
         Top = bounds.Top;
-        Width = bounds.Width;
-        Height = bounds.Height;
+        Width = SystemParameters.PrimaryScreenWidth;
+        Height = SystemParameters.PrimaryScreenHeight;
 
         _timer = new DispatcherTimer(DispatcherPriority.Render)
         {

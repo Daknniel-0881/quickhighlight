@@ -2,7 +2,7 @@
 
 > 录屏 / 演讲 / 远程协作场景下，按住一个键即可让鼠标周围浮起一个放大圈，圈外暗化，圈内高亮放大画面细节。
 
-一个轻量的 macOS 屏幕局部放大工具——让观众一眼看清你正在操作的位置。基于 ScreenCaptureKit 60 fps 抓帧，原生 AppKit 渲染，菜单栏常驻不抢 Dock。
+一个轻量的跨平台屏幕局部放大工具——让观众一眼看清你正在操作的位置。macOS 版基于 ScreenCaptureKit 60 fps 抓帧 + AppKit 渲染；Windows 版基于 Windows.Graphics.Capture + WPF 透明 overlay。
 
 ![放大镜设置](screenshots/03_settings_magnifier.png)
 
@@ -35,6 +35,7 @@
 - 🔐 **无证书默认安装**：默认不要求本地证书；频繁开发 rebuild 时可选 `QH_SIGNING_MODE=local`
 - 🧹 **单一安装副本**：只保留 `/Applications/快捷高光.app`，避免桌面/`dist` 副本造成授权身份错位
 - 📍 **多显示器感知**：副屏暂不放大（SCStream 当前仅抓主屏），不会出错或卡死
+- 🪟 **Windows 端口**：WPF/.NET 8 托盘应用，使用 Windows.Graphics.Capture，失败时同样不弹窗、不画错误文字、静默恢复
 
 ---
 
@@ -164,6 +165,7 @@ bash build_app.sh
 Sources/CursorMagnifier/
 ├── main.swift               # NSApplication 入口（.accessory 模式不抢 Dock）
 ├── AppDelegate.swift        # 菜单栏 + 设置窗口 + 总指挥
+├── CaptureRecoveryPolicy.swift # 抓帧权限/帧恢复策略（不弹窗，静默轮询）
 ├── HotkeyMonitor.swift      # IOKit 设备掩码 + 组合键 keyDown 监听
 ├── HotkeyRecorder.swift     # SwiftUI 录入式快捷键控件
 ├── KeyDisplay.swift         # keyCode → "⌃⌥S" 文字渲染
@@ -173,6 +175,13 @@ Sources/CursorMagnifier/
 ├── SettingsStore.swift      # UserDefaults + @Published + 版本迁移
 ├── SettingsView.swift       # SwiftUI 三 Tab 设置面板 + 实时预览 Canvas
 └── LaunchAtLogin.swift      # SMAppService 开机自启
+
+quickhighlight-win/
+├── QuickHighlight/Capture/  # Windows.Graphics.Capture + D3D11 frame pool
+├── QuickHighlight/Overlay/  # WPF click-through overlay + crop/zoom 绘制
+├── QuickHighlight/Hotkeys/  # 全局激活键 + 形状切换组合键
+├── QuickHighlight/Settings/ # WPF 设置页 + JSON 设置存储
+└── build.ps1                # self-contained single-file win-x64 打包
 ```
 
 ---
@@ -269,7 +278,9 @@ Windows WPF/.NET 8 端口位于 `quickhighlight-win/QuickHighlight/`：
 - 使用 `Windows.Graphics.Capture` + D3D11 frame pool 持续抓主屏。
 - 使用透明置顶 WPF overlay，`WS_EX_TRANSPARENT` 鼠标穿透。
 - 默认按住 `LeftAlt` 显示高光，`Ctrl+Alt+S` 全局切换圆形 / 圆角矩形。
-- 抓帧失败时不弹窗、不在 lens 内画错误文字，托盘轻提示并指数退避重连。
+- 抓帧失败时不弹窗、不在 lens 内画错误文字，托盘轻提示；连续失败后低频探测，恢复后自动接上。
+- 收到第一帧后才标记抓帧健康，避免“托盘显示正常但 Zoom 没画面”的误判。
+- 高 DPI 下用物理像素计算 crop，再按 WPF DPI 绘制，125%/150% 缩放时倍率仍对齐。
 
 Windows 构建：
 
