@@ -128,15 +128,15 @@ cursorPos = NSPoint(
 ### P-301 · `codesign --sign -` ad-hoc 签名 → 每次重 build 都会重新弹权限
 **症状**：每次 `bash build_app.sh` 后启动 app，TCC 都重新弹一次「屏幕录制」「辅助功能」授权框。
 **根因**：ad-hoc 签名每次生成新 cdhash，TCC 数据库以为是全新 app。
-**正确做法**：用稳定本地自签证书 `QuickHighlightDevCert`：
+**正确做法**：用当前 Mac 自己生成并复用的稳定本地自签证书 `QuickHighlightLocalSigner`：
 ```bash
-codesign --force --deep --sign QuickHighlightDevCert /Applications/快捷高光.app
+bash build_app.sh
 ```
-build_app.sh 里 `ensure_signing_identity()` 一次性创建并复用。
+build_app.sh 里 `ensure_signing_identity()` 一次性创建并复用。这个证书不能跨电脑复用，也不能提交到开源仓库；正式分发应使用 Developer ID 签名 + notarize。
 
-### P-302 · `/Applications` 和桌面快捷方式必须共享同一 cdhash
+### P-302 · 只保留并启动 `/Applications` 里的唯一 App
 **症状**：双击桌面快捷方式弹一次权限，再双击 /Applications 又弹一次。
-**正确做法**：用同一证书签名 → `cp -R /Applications/X.app ~/Desktop/X.app`，两份共享 cdhash，TCC 只记一条授权。**不要**用 symlink（某些 macOS 版本 Finder 不刷图标）。
+**正确做法**：不要复制一整份 `.app` 到桌面。每次安装时清理桌面和旧项目目录里的 `快捷高光.app`，只从 `/Applications/快捷高光.app` 启动，避免 TCC 记录多份看似同名但代码身份不同的 App。
 
 ### P-303 · 别忘了清 quarantine 属性
 ```bash

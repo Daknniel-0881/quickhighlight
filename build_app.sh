@@ -163,9 +163,9 @@ cp "$BIN_SRC" "$APP_DIR/Contents/MacOS/$EXEC_NAME"
 cp "$PLIST_SRC" "$APP_DIR/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 
-# 尝试创建/查找稳定证书。openssl 自动路径在新版 macOS Security 上会因为
-# trust setting 缺失被拒（即使 import 成功，find-identity -p codesigning 仍 0）。
-# 没有稳定证书时 fallback ad-hoc，并 loud 提示曲率手动建一次。
+# 尝试创建/查找当前 Mac 自己的稳定证书。这个证书不能跨机器复用；
+# 开源用户需要在自己的 Mac 上生成自己的本地身份，正式分发应使用 Developer ID。
+# 没有稳定证书时默认停止，只有显式 QH_ALLOW_ADHOC=1 才允许临时 ad-hoc。
 set +e
 ensure_signing_identity
 ENSURE_RC=$?
@@ -218,7 +218,6 @@ PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 KEEP_PATHS=(
     "${PROJECT_ROOT}/dist/${APP_NAME}.app"
     "${INSTALL_PATH}"
-    "${DESKTOP_DIR}/${APP_NAME}.app"
 )
 STALE_LIST="$(mdfind 'kMDItemFSName == "*快捷高光*"cd || kMDItemFSName == "CursorMagnifier*"cd || kMDItemFSName == "QuickHighlight*"cd' 2>/dev/null \
     | grep -E '\.app$' \
@@ -248,23 +247,17 @@ echo "→ 重新注册到 Launch Services（刷图标缓存） ..."
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "$INSTALL_PATH" 2>/dev/null || true
 
-echo "→ 桌面快捷方式：复制完整 .app（带完整 icon resource，Finder 直接显示 logo）..."
-# symlink 在某些 macOS 版本里 Finder 不刷图标。直接 cp -R 整份 .app 最稳。
-# 用稳定本地签名后两份 .app 共享同一个 cdhash，TCC 只记一条授权，不会反复弹权限。
+echo "→ 清理桌面旧副本，避免误启动另一个代码身份 ..."
 rm -f "${DESKTOP_DIR}/${APP_NAME}" "${DESKTOP_DIR}/${APP_NAME}的替身" 2>/dev/null || true
-rm -rf "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
-cp -R "$INSTALL_PATH" "${DESKTOP_DIR}/${APP_NAME}.app"
-xattr -cr "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
-xattr -dr com.apple.provenance "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
-xattr -dr com.apple.quarantine "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-    -f "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
-touch "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
+if [ -d "${DESKTOP_DIR}/${APP_NAME}.app" ]; then
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -u "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
+    rm -rf "${DESKTOP_DIR}/${APP_NAME}.app" 2>/dev/null || true
+fi
 
 echo ""
 echo "✓ 全部完成："
 echo "  · 已安装：${INSTALL_PATH}"
-echo "  · 桌面快捷方式：~/Desktop/${APP_NAME}"
 echo ""
-echo "双击桌面【${APP_NAME}】图标启动，菜单栏会出现 🔍 图标。"
+echo "请从【应用程序】里的【${APP_NAME}】启动，菜单栏会出现 🔍 图标。"
 echo "首次运行需授权：辅助功能 + 屏幕录制（系统设置 → 隐私与安全性）"

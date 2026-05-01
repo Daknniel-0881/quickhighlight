@@ -69,13 +69,13 @@ bash build_app.sh
 3. 打包成 `dist/快捷高光.app`
 4. 用稳定本地证书签名（首次自动创建 `QuickHighlightLocalSigner`）
 5. 安装到 `/Applications/快捷高光.app`
-6. 复制完整 .app 到桌面（带完整 icon resource，Finder 直接显示 logo）
+6. 清理桌面旧副本，避免误启动另一个代码身份
 7. 重新注册到 Launch Services 刷图标缓存
 8. 关闭旧实例，准备启动新版本
 
 ### 首次运行
 
-双击桌面【快捷高光】图标启动，菜单栏会出现 🔍 图标。
+从【应用程序】里启动【快捷高光】，菜单栏会出现 🔍 图标。不要从 `dist/` 或桌面旧副本启动，否则 macOS 可能把它当成另一份 App。
 
 首次运行需授权两项系统权限：
 
@@ -85,6 +85,36 @@ bash build_app.sh
 | **屏幕录制** | 抓主屏画面给放大圈显示 | 系统设置 → 隐私与安全性 → 屏幕录制 |
 
 > macOS 的屏幕录制授权和 App 代码身份绑定。`build_app.sh` 默认拒绝生成 ad-hoc 签名产物，避免重 build 后 cdhash 漂移导致反复授权。若只是临时本机调试，可显式运行 `QH_ALLOW_ADHOC=1 bash build_app.sh`，但这可能让系统再次请求屏幕录制授权。
+
+### 权限与签名 FAQ
+
+**放大倍率需要签名吗？**
+
+不需要。Zoom 的实现只是：从屏幕帧里裁一块更小的区域（`lensSize / zoom`），再拉伸画回 lens。签名不参与这个数学。
+
+**那为什么还需要“录屏与系统录音”权限？**
+
+因为圈内要显示“真实屏幕内容”的放大画面，App 必须读取屏幕像素。macOS 把这类能力统一放在“录屏与系统录音”权限里；快捷高光不录音，但系统 UI 会这么命名。
+
+**签名的意义是什么？可以删掉吗？**
+
+可以删掉，但不推荐作为日常 build。没有稳定签名时，`codesign --sign -` 会生成 ad-hoc 签名；每次 rebuild 的 cdhash 可能变化，TCC 会把它当成一个新 App，于是你明明已经给“快捷高光”开了权限，系统仍可能再次弹权限框。
+
+**开源用户在自己的 Mac 上怎么办？**
+
+本地自签证书不能跨电脑复用，仓库也不会携带任何人的私钥。每个自己 build 的用户有两条路：
+
+1. 推荐：运行 `bash build_app.sh`，在自己的 Mac 上生成并复用 `QuickHighlightLocalSigner`。
+2. 临时调试：运行 `QH_ALLOW_ADHOC=1 bash build_app.sh`，接受后续 rebuild 可能需要重新授权。
+
+如果未来发布正式二进制，最好使用 Apple Developer ID 签名并 notarize。那样所有用户下载同一个发布包时，代码身份对升级更稳定。
+
+**反复弹“录屏与系统录音”怎么办？**
+
+1. 退出快捷高光。
+2. 删除桌面、`dist/`、旧项目目录里的 `快捷高光.app`，只保留 `/Applications/快捷高光.app`。
+3. 在系统设置 → 隐私与安全性 → 录屏与系统录音里，移除旧的“快捷高光”条目，再把 `/Applications/快捷高光.app` 加回来并打开。
+4. 只从【应用程序】启动，不要启动桌面副本或仓库 `dist` 副本。
 
 ---
 
@@ -212,7 +242,7 @@ ctx.draw(img, in: CGRect(x: 0, y: 0, width: circleRect.width, height: circleRect
 
 用 `NSEvent.addGlobalMonitorForEvents(.keyDown)` + `addLocalMonitorForEvents` 双管齐下：global 接其他 app 内的按键，local 接自家窗口的按键并能消费事件（避免误触表单）。已授权辅助功能即可工作，**不需要额外授权 Input Monitoring**。
 
-### 稳定本地代码签名（重 build 后不弹权限）
+### 稳定本地代码签名（重 build 后尽量不弹权限）
 
 `codesign --sign -` ad-hoc 签名每次重 build 都会生成新的 cdhash，TCC 数据库以为是新 app 反复要求授权。`build_app.sh` 优先使用本地自签 `QuickHighlightLocalSigner` 长期复用，并且默认不再悄悄退回 ad-hoc：
 
@@ -220,7 +250,7 @@ ctx.draw(img, in: CGRect(x: 0, y: 0, width: circleRect.width, height: circleRect
 bash build_app.sh
 ```
 
-如果钥匙串私钥访问授权未完成，脚本会停止并说明原因。临时调试可以显式设置 `QH_ALLOW_ADHOC=1`，但发布/日常使用不推荐。
+`QuickHighlightLocalSigner` 只属于当前 Mac，不能提交到仓库，也不能替其他电脑解决权限。它的作用只是让同一台机器上的本地 rebuild 尽量保持同一个代码身份。如果钥匙串私钥访问授权未完成，脚本会停止并说明原因。临时调试可以显式设置 `QH_ALLOW_ADHOC=1`，但发布/日常使用不推荐。
 
 ### Windows 版本
 
@@ -263,7 +293,7 @@ cd quickhighlight-win
 3. **多桌面 (Virtual Desktop)**：覆盖窗口要正确处理切换桌面的可见性
 4. **HiDPI 鼠标坐标**：`GetCursorPos` 返回逻辑像素，与 Capture API 拿到的物理像素需要换算
 
-如有兴趣启动 Windows 版，欢迎开 issue 讨论或直接 PR `quickhighlight-win/` 子目录。
+当前仓库已经包含 WPF/.NET 8 Windows 端口；上表保留为后续优化参考。
 
 ---
 
@@ -272,7 +302,7 @@ cd quickhighlight-win
 ```bash
 swift build                      # debug build
 swift build -c release           # release build
-bash build_app.sh                # 完整流程：编译 → 签名 → 装 /Applications → 桌面快捷方式
+bash build_app.sh                # 完整流程：编译 → 签名 → 装 /Applications → 清理旧副本
 ```
 
 调试时直接跑 `.build/debug/CursorMagnifier`，菜单栏图标会出现，但你需要先给这个 debug binary 单独授一次屏幕录制权限。

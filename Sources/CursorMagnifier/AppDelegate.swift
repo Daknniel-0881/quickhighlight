@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var captureRestartTimer: Timer?
     private var captureRestartAttempts = 0
     private static let maxCaptureRestartAttempts = 5
+    private var hasReceivedFrameSinceLaunch = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupOverlayWindow()
@@ -36,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // SCStream 系统级停止时静默重启，绝不弹窗
         ScreenCapturer.shared.onStreamStopped = { [weak self] _ in
             self?.updateStatusIcon(captureHealthy: false)
-            self?.scheduleSilentCaptureRestart()
+            self?.scheduleSilentCaptureRestartIfSafe()
         }
         // 权限由系统首启时自然处理；App 自己不再弹任何权限引导，避免授权死循环打扰录制。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -120,6 +121,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// CGPreflight 在 ad-hoc 重签 cdhash 漂移时会假阴性，所以不预检——直接让 SCStream 试，
     /// 真正不行了再静默重试，绝不打扰用户。
     private func startScreenCapture() {
+        guard CGPreflightScreenCaptureAccess() else {
+            NSLog("[快捷高光] 当前 App 身份尚未获得屏幕录制权限，跳过自动抓帧以避免系统弹窗循环。")
+            updateStatusIcon(captureHealthy: false)
+            return
+        }
+
         let windowID = CGWindowID(overlayWindow?.windowNumber ?? 0)
         Task { @MainActor in
             do {
@@ -127,19 +134,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 NSLog("[快捷高光] ScreenCapturer.start 失败: \(error.localizedDescription) — 静默重启中")
                 self.updateStatusIcon(captureHealthy: false)
-                self.scheduleSilentCaptureRestart()
+                self.scheduleSilentCaptureRestartIfSafe()
                 return
             }
             // start() 成功 ≠ 真有 frame；2s 后仍无 latestFrame 当作启动失败，静默重启
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if ScreenCapturer.shared.latestFrame == nil {
-                NSLog("[快捷高光] SCStream 启动后 2s 无帧 — 静默重启")
+                NSLog("[快捷高光] SCStream 启动后 2s 无帧")
                 await ScreenCapturer.shared.stop()
                 self.updateStatusIcon(captureHealthy: false)
-                self.scheduleSilentCaptureRestart()
+                self.scheduleSilentCaptureRestartIfSafe()
                 return
             }
             // 真·健康：reset 退避 + 重试计数，菜单栏图标恢复正常
+            self.hasReceivedFrameSinceLaunch = true
             self.captureRestartDelay = 1.0
             self.captureRestartAttempts = 0
             self.updateStatusIcon(captureHealthy: true)
@@ -163,6 +171,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         captureRestartTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             self?.startScreenCapture()
         }
+    }
+
+    private func scheduleSilentCaptureRestartIfSafe() {
+        guard hasReceivedFrameSinceLaunch || CGPreflightScreenCaptureAccess() else {
+            NSLog("[快捷高光] 当前身份未通过屏幕录制预检，停止自动重试，避免反复触发系统权限弹窗。")
+            return
+        }
+        scheduleSilentCaptureRestart()
     }
 
     /// 用户从菜单栏手动触发重连：清空退避计数 + 立刻重启
