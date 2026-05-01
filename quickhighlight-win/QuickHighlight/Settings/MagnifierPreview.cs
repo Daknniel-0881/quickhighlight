@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Media;
+using MediaBrushes = System.Windows.Media.Brushes;
 using MediaColor = System.Windows.Media.Color;
 using MediaPen = System.Windows.Media.Pen;
 using WpfPoint = System.Windows.Point;
@@ -38,7 +39,7 @@ public sealed class MagnifierPreview : FrameworkElement
             ? width
             : Math.Min(settings.RectHeight * 0.45, ActualHeight - 18);
         var lens = new Rect(center.X - width / 2, center.Y - height / 2, width, height);
-        var lensGeometry = settings.Shape == MagnifierShape.Circle
+        Geometry lensGeometry = settings.Shape == MagnifierShape.Circle
             ? new EllipseGeometry(lens)
             : new RectangleGeometry(lens, 8, 8);
 
@@ -52,10 +53,10 @@ public sealed class MagnifierPreview : FrameworkElement
         var text = new FormattedText(
             "快捷高光 Aa 12345",
             Thread.CurrentThread.CurrentUICulture,
-            FlowDirection.LeftToRight,
+            System.Windows.FlowDirection.LeftToRight,
             new Typeface("Segoe UI"),
             18,
-            Brushes.Black,
+            MediaBrushes.Black,
             VisualTreeHelper.GetDpi(this).PixelsPerDip);
         dc.DrawText(text, new WpfPoint(center.X - text.Width / 2, center.Y - text.Height / 2));
         dc.Pop();
@@ -63,7 +64,7 @@ public sealed class MagnifierPreview : FrameworkElement
 
         if (settings.ShowRing)
         {
-            dc.DrawGeometry(null, new MediaPen(Brushes.White, 2), lensGeometry);
+            dc.DrawGeometry(null, new MediaPen(MediaBrushes.White, 2), lensGeometry);
             dc.DrawGeometry(null, new MediaPen(new SolidColorBrush(MediaColor.FromArgb(90, 0, 0, 0)), 1), lensGeometry);
         }
     }
