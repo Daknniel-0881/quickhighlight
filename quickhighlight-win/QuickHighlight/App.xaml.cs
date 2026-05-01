@@ -6,7 +6,7 @@ using QuickHighlight.Settings;
 
 namespace QuickHighlight;
 
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
     private SettingsStore _settings = null!;
     private ScreenCapturer _capturer = null!;

@@ -28,7 +28,7 @@ public partial class SettingsWindow : Window
         };
     }
 
-    private void ChordBox_OnPreviewKeyDown(object sender, KeyEventArgs e)
+    private void ChordBox_OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         e.Handled = true;
         var key = e.Key == Key.System ? e.SystemKey : e.Key;

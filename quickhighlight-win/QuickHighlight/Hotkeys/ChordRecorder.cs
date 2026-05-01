@@ -5,7 +5,7 @@ namespace QuickHighlight.Hotkeys;
 
 public static class ChordRecorder
 {
-    public static bool TryCreate(KeyEventArgs e, out ChordGesture gesture)
+    public static bool TryCreate(System.Windows.Input.KeyEventArgs e, out ChordGesture gesture)
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var modifiers = Keyboard.Modifiers;

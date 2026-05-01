@@ -13,7 +13,7 @@ public sealed class OverlaySurface : FrameworkElement
 {
     private SettingsStore? _settings;
     private ScreenCapturer? _capturer;
-    private Point _cursor;
+    private System.Windows.Point _cursor;
 
     public void Configure(SettingsStore settings, ScreenCapturer capturer)
     {
@@ -26,7 +26,7 @@ public sealed class OverlaySurface : FrameworkElement
         if (GetCursorPos(out var point))
         {
             var dpi = VisualTreeHelper.GetDpi(this);
-            _cursor = new Point(point.X / dpi.DpiScaleX, point.Y / dpi.DpiScaleY);
+            _cursor = new System.Windows.Point(point.X / dpi.DpiScaleX, point.Y / dpi.DpiScaleY);
         }
         InvalidateVisual();
     }
@@ -73,7 +73,7 @@ public sealed class OverlaySurface : FrameworkElement
                 14,
                 Brushes.White,
                 VisualTreeHelper.GetDpi(this).PixelsPerDip);
-            dc.DrawText(text, new Point(_cursor.X - text.Width / 2, lens.Bottom + 6));
+            dc.DrawText(text, new System.Windows.Point(_cursor.X - text.Width / 2, lens.Bottom + 6));
         }
     }
 
