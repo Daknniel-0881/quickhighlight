@@ -66,7 +66,7 @@ struct SettingsView: View {
             } header: {
                 Text("激活放大镜")
             } footer: {
-                Text("按住激活键 → 放大镜出现，松开消失。激活键必须是单个修饰键（⌥ ⇧ ⌃ ⌘ Fn），不支持组合键。")
+                Text("默认是左 Option 双击：第一次轻点布防，450ms 内第二次按住 → 放大镜出现，松开消失。其他修饰键仍是按住即激活。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

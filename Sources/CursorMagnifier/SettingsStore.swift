@@ -26,7 +26,7 @@ enum HotkeyOption: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .leftOption:   return "左 Option (⌥)"
+        case .leftOption:   return "左 Option 双击 (⌥⌥)"
         case .rightOption:  return "右 Option (⌥)"
         case .leftShift:    return "左 Shift (⇧)"
         case .rightShift:   return "右 Shift (⇧)"

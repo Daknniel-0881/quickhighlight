@@ -4,7 +4,7 @@ import Carbon.HIToolbox
 /// 热键监听器
 ///
 /// 两条独立通道：
-/// 1. **单键激活通道**（按住 ⌥/⇧/⌃/⌘/Fn 单个修饰键）
+/// 1. **单键激活通道**（左 Option 双击按住，或按住其他 ⌥/⇧/⌃/⌘/Fn 单个修饰键）
 ///    用 NSEvent.addGlobalMonitorForEvents(.flagsChanged)。
 ///    flagsChanged 是「修饰键状态变化」事件，系统不会拦截，被动监听足够。
 ///
@@ -34,6 +34,7 @@ final class HotkeyMonitor {
     private var keyLocal: Any?
     private var lastState = false
     private var lastToggleAt: TimeInterval = 0
+    private var leftOptionDoubleTapGate = ModifierDoubleTapGate()
 
     // Carbon 组合键通道
     private var carbonHotKeyRef: EventHotKeyRef?
@@ -76,6 +77,7 @@ final class HotkeyMonitor {
             RemoveEventHandler(h)
             carbonEventHandler = nil
         }
+        _ = leftOptionDoubleTapGate.reset()
         if lastState {
             lastState = false
             onStateChange?(false)
@@ -102,6 +104,7 @@ final class HotkeyMonitor {
     /// SettingsStore 的 toggleShapeKeyCode / toggleShapeModifiers 改变后必须 reset，
     /// 否则用户改了快捷键但 Carbon 还注册的是旧组合
     func resetState() {
+        _ = leftOptionDoubleTapGate.reset()
         if lastState {
             lastState = false
             onStateChange?(false)
@@ -109,13 +112,26 @@ final class HotkeyMonitor {
         registerChordIfConfigured()  // 重新注册（旧的会先被 unregister）
     }
 
-    /// 单键激活（修饰键按住）
+    private func publishState(_ isDown: Bool) {
+        guard isDown != lastState else { return }
+        lastState = isDown
+        onStateChange?(isDown)
+    }
+
+    /// 单键激活（左 Option 双击按住；其他修饰键仍保持按住即激活）
     private func handleFlags(_ event: NSEvent) {
         let mask = store.hotkey.deviceMask
         let isDown = (event.modifierFlags.rawValue & mask) != 0
-        if isDown != lastState {
-            lastState = isDown
-            onStateChange?(isDown)
+        if store.hotkey == .leftOption {
+            let now = ProcessInfo.processInfo.systemUptime
+            if let nextState = leftOptionDoubleTapGate.handle(isDown: isDown, now: now) {
+                publishState(nextState)
+            }
+        } else {
+            if let nextState = leftOptionDoubleTapGate.reset() {
+                publishState(nextState)
+            }
+            publishState(isDown)
         }
     }
 
